@@ -77,8 +77,15 @@ async function main() {
   const casa = JSON.parse(fs.readFileSync(path.join(ROOT, 'data/casa.json'), 'utf8').replace(/^﻿/, ''));
   const desdeHoy = hoy();
   const fuentes = (process.env.ICAL_URLS || '').split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'))
-    .map(l => { const [nombre, url] = l.split(/\s+/); return { nombre: nombre.toLowerCase(), url }; })
-    .filter(f => f.url);
+    .map(l => {
+      // Acepta "booking https://..." o solo el link (el nombre se deduce del dominio)
+      const partes = l.split(/\s+/), url = partes.find(p => /^https?:\/\//i.test(p));
+      if (!url) return null;
+      let nombre = partes[0] !== url ? partes[0].toLowerCase() : '';
+      if (!nombre) { const h = new URL(url).hostname; nombre = ['airbnb', 'booking', 'vrbo'].find(n => h.includes(n)) || h.split('.').slice(-2, -1)[0]; }
+      return { nombre, url };
+    })
+    .filter(Boolean);
 
   let anterior = null;
   if (process.env.SITE_URL) {
