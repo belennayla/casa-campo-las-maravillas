@@ -69,7 +69,7 @@
     { "plataforma": "Booking.com", "puntaje": "10/10", "comentarios": 3 },
     { "plataforma": "Google", "puntaje": "4,9/5", "comentarios": 12 }
   ],
-  "calendario_actualizado": false,
+  "calendario_actualizado": true,
   "_nota_calendario": "Poner true cuando 'ocupadas' tenga TODAS las reservas y bloqueos vigentes. Mientras sea false, la web avisa que la disponibilidad está sujeta a confirmación.",
   "_nota_ocupadas": "Cada bloque ocupa las noches desde 'desde' (ingreso) hasta el día anterior a 'hasta' (salida). El día de salida queda libre para un nuevo ingreso.",
   "ocupadas": []
