@@ -47,10 +47,10 @@ Cada plataforma tiene su propio link. Incluye las reservas directas y las de las
 
 | Pegar en | Link |
 |---|---|
-| Airbnb | `https://belennayla.github.io/casa-campo-las-maravillas/calendario-airbnb.ics` |
-| Booking | `https://belennayla.github.io/casa-campo-las-maravillas/calendario-booking.ics` |
-| Vrbo | `https://belennayla.github.io/casa-campo-las-maravillas/calendario-vrbo.ics` |
-| Otra (Google Calendar, etc.) | `https://belennayla.github.io/casa-campo-las-maravillas/calendario.ics` |
+| Airbnb | `https://casacampolasmaravillas.github.io/calendario-airbnb.ics` |
+| Booking | `https://casacampolasmaravillas.github.io/calendario-booking.ics` |
+| Vrbo | `https://casacampolasmaravillas.github.io/calendario-vrbo.ics` |
+| Otra (Google Calendar, etc.) | `https://casacampolasmaravillas.github.io/calendario.ics` |
 
 **Importante:** GitHub pausa la sincronización automática si el repositorio pasa **60 días sin cambios**, y avisa por mail antes. Para reactivarla: pestaña **Actions** → "Sincronizar calendarios y publicar" → **Enable workflow**. Cargar una reserva o cambiar cualquier cosa también reinicia el plazo.
 

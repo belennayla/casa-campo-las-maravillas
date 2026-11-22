@@ -35,7 +35,7 @@
 - Aeropuerto Valle del Conlara: 21 km
 
 ## Datos
-- [Sitio web](https://belennayla.github.io/casa-campo-las-maravillas/)
-- [Información completa en JSON](https://belennayla.github.io/casa-campo-las-maravillas/data/casa.json)
-- [Fechas ocupadas sincronizadas con Airbnb, Booking y Vrbo](https://belennayla.github.io/casa-campo-las-maravillas/data/ocupadas-sync.json)
-- [Calendario iCal de fechas no disponibles](https://belennayla.github.io/casa-campo-las-maravillas/calendario.ics)
+- [Sitio web](https://casacampolasmaravillas.github.io/)
+- [Información completa en JSON](https://casacampolasmaravillas.github.io/data/casa.json)
+- [Fechas ocupadas sincronizadas con Airbnb, Booking y Vrbo](https://casacampolasmaravillas.github.io/data/ocupadas-sync.json)
+- [Calendario iCal de fechas no disponibles](https://casacampolasmaravillas.github.io/calendario.ics)
