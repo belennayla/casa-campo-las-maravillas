@@ -82,7 +82,7 @@ async function main() {
       const partes = l.split(/\s+/), url = partes.find(p => /^https?:\/\//i.test(p));
       if (!url) return null;
       let nombre = partes[0] !== url ? partes[0].toLowerCase() : '';
-      if (!nombre) { const h = new URL(url).hostname; nombre = ['airbnb', 'booking', 'vrbo'].find(n => h.includes(n)) || h.split('.').slice(-2, -1)[0]; }
+      if (!nombre) { const h = new URL(url).hostname; nombre = ['airbnb', 'booking', 'vrbo'].find(n => h.includes(n)) || h.split('.').slice(-2, -1)[0] || h; }
       return { nombre, url };
     })
     .filter(Boolean);
