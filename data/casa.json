@@ -1,0 +1,76 @@
+{
+  "nombre": "Casa Campo Las Maravillas",
+  "tipo": "Casa de campo completa para familias y grupos",
+  "ubicacion": {
+    "zona": "Bajo Las Maravillas, a 10 minutos de Villa de Merlo (San Luis), al pie de las Sierras de los Comechingones",
+    "direccion": "Huella Serrana 900, Bajo Las Maravillas",
+    "plus_code": "MXV9+F5 La Ramada, Córdoba",
+    "mapa": "https://share.google/3dPakMTsBouiyEcIu",
+    "cerca": [
+      { "lugar": "Villa de Merlo (centro)", "distancia": "8 km · 10 min en auto" },
+      { "lugar": "Piedra Blanca", "distancia": "5 km" },
+      { "lugar": "Reserva Natural Mogote Bayo", "distancia": "11 km" },
+      { "lugar": "Aeropuerto Valle del Conlara", "distancia": "21 km" }
+    ]
+  },
+  "contacto": {
+    "gestor": "Gonzalo Amir Biassi",
+    "whatsapp": "5492664546558",
+    "whatsapp_visible": "+54 9 266 454-6558",
+    "tiktok_nombre": "Casa Campo Las Maravillas",
+    "tiktok_url": "https://www.tiktok.com/search?q=Casa%20Campo%20Las%20Maravillas"
+  },
+  "casa": {
+    "superficie_m2": 250,
+    "dormitorios": 3,
+    "banos": 1,
+    "camas": [
+      { "ambiente": "Dormitorio 1", "detalle": "1 cama doble y 1 cama individual" },
+      { "ambiente": "Dormitorio 2", "detalle": "1 cama doble y 1 cama individual" },
+      { "ambiente": "Dormitorio 3", "detalle": "1 cama doble y 1 cama individual" },
+      { "ambiente": "Living", "detalle": "1 sofá cama" }
+    ],
+    "servicios": [
+      "Pileta al aire libre (de temporada)",
+      "Parque amplio con árboles",
+      "Asador y mesas de exterior",
+      "Cocina completamente equipada",
+      "Living comedor con TV de pantalla plana",
+      "WiFi gratis",
+      "Estacionamiento privado gratis",
+      "Ropa de cama incluida",
+      "Toallones y toallas incluidos",
+      "Balcón y terraza con vista a las sierras"
+    ]
+  },
+  "capacidad_maxima": 11,
+  "horarios": { "ingreso": "15:00 a 18:00", "salida": "hasta las 11:00" },
+  "tarifas": {
+    "moneda": "ARS",
+    "modalidad": "Precio por noche para la casa completa según la cantidad total de huéspedes. No hay diferencia por edad.",
+    "por_huespedes": { "1-6": 210000, "7": 220000, "8": 230000, "9": 240000, "10": 250000, "11": 250000 },
+    "estadia_minima_noches": 2,
+    "descuentos": "No hay descuentos."
+  },
+  "reserva": {
+    "sena_porcentaje": 50,
+    "saldo": "El 50 % restante se abona al ingresar.",
+    "confirmacion": "La reserva se confirma cuando la seña está acreditada y los dueños la confirman.",
+    "preferencia_sin_sena_horas": 48,
+    "cancelacion": "No hay cancelación gratuita: la seña no es reembolsable.",
+    "pago": { "medio": "Transferencia bancaria", "alias": "gonzalobiassi1", "titular": "Gonzalo Amir Biassi" }
+  },
+  "normas": {
+    "mascotas": "Se admiten sin cargo extra.",
+    "fumar": "No se puede fumar dentro de la casa.",
+    "cunas": "No hay cunas ni camas supletorias."
+  },
+  "valoraciones": [
+    { "plataforma": "Booking.com", "puntaje": "10/10", "comentarios": 3 },
+    { "plataforma": "Google", "puntaje": "4,9/5", "comentarios": 12 }
+  ],
+  "calendario_actualizado": false,
+  "_nota_calendario": "Poner true cuando 'ocupadas' tenga TODAS las reservas y bloqueos vigentes. Mientras sea false, la web avisa que la disponibilidad está sujeta a confirmación.",
+  "_nota_ocupadas": "Cada bloque ocupa las noches desde 'desde' (ingreso) hasta el día anterior a 'hasta' (salida). El día de salida queda libre para un nuevo ingreso.",
+  "ocupadas": []
+}

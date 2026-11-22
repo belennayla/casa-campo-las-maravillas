@@ -1,0 +1,289 @@
+/* Casa Campo Las Maravillas · web de reservas directas
+   Los datos editables (precios, capacidad, fechas ocupadas) están en data/casa.json */
+(function () {
+  'use strict';
+  const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+  const money = n => '$' + Math.round(n).toLocaleString('es-AR');
+
+  /* ---------- FOTOS ---------- */
+  const CATS = [
+    ['todas', 'Todas'], ['exterior', 'Exterior'], ['pileta', 'Pileta'], ['parque', 'Parque y asador'],
+    ['interior', 'Living y cocina'], ['dormitorios', 'Dormitorios'], ['bano', 'Baño'], ['vistas', 'Vistas']
+  ];
+  // [número de foto, categoría, descripción] en el orden en que se muestran
+  const FOTOS = [
+    [21, 'exterior', 'Frente de la casa'], [7, 'pileta', 'Pileta'], [12, 'interior', 'Living comedor'],
+    [3, 'parque', 'Mesas largas en el parque'], [31, 'dormitorios', 'Dormitorio con cama doble e individual'],
+    [20, 'vistas', 'Vista a las sierras'], [14, 'interior', 'Cocina equipada'], [6, 'pileta', 'Pileta y parque'],
+    [15, 'interior', 'Living'], [27, 'parque', 'Mesa de exterior con vista a las sierras'], [23, 'exterior', 'Frente y cochera'],
+    [32, 'dormitorios', 'Dormitorio'], [4, 'pileta', 'Parque junto a la pileta'], [29, 'interior', 'Comedor, cocina y living'],
+    [18, 'bano', 'Baño'], [5, 'parque', 'Asador y mesas'], [30, 'vistas', 'Vista desde el living'],
+    [1, 'exterior', 'Frente de la casa'], [28, 'pileta', 'Sombrilla junto a la pileta'], [13, 'interior', 'Comedor'],
+    [26, 'parque', 'Mesa bajo los árboles'], [19, 'vistas', 'Vista al parque y la pileta'], [16, 'interior', 'Living'],
+    [8, 'parque', 'Hamaca paraguaya'], [10, 'exterior', 'Balcón de ingreso'], [11, 'interior', 'Comedor y cocina'],
+    [9, 'parque', 'Asador'], [17, 'interior', 'Living'], [38, 'exterior', 'Ingreso y escalera a la terraza'],
+    [2, 'parque', 'Parque'], [22, 'parque', 'Parque'], [24, 'exterior', 'Tranquera de ingreso'],
+    [25, 'exterior', 'Ingreso a la propiedad'], [33, 'dormitorios', 'Placard'], [34, 'dormitorios', 'Vestidor'],
+    [35, 'dormitorios', 'Vestidor'], [36, 'bano', 'Ducha'], [37, 'bano', 'Baño']
+  ];
+  const src = (n, sm) => `img/fotos/foto-${String(n).padStart(2, '0')}${sm ? '-sm' : ''}.jpg`;
+  let cat = 'todas', expanded = false, lbList = [], lbIdx = 0;
+
+  function renderFilters() {
+    $('#filtros').innerHTML = CATS.map(([k, l]) =>
+      `<button type="button" role="tab" data-cat="${k}" aria-selected="${k === cat}">${l}</button>`).join('');
+  }
+  function renderGrid() {
+    const list = FOTOS.filter(f => cat === 'todas' || f[1] === cat);
+    const limit = cat === 'todas' && !expanded ? 11 : list.length;
+    lbList = list;
+    $('#grid').innerHTML = list.slice(0, limit).map((f, i) =>
+      `<button type="button" data-i="${i}" class="${i === 0 ? 'big' : ''}" aria-label="Ampliar: ${f[2]}">
+         <img src="${src(f[0], i !== 0)}" alt="${f[2]}" loading="lazy"></button>`).join('') +
+      (limit < list.length ? `<button type="button" class="btn btn--ghost-dark grid__more" id="ver-mas">Ver las ${list.length} fotos</button>` : '');
+  }
+  $('#filtros').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    cat = b.dataset.cat; expanded = false; renderFilters(); renderGrid();
+  });
+  $('#grid').addEventListener('click', e => {
+    if (e.target.closest('#ver-mas')) { expanded = true; renderGrid(); return; }
+    const b = e.target.closest('button[data-i]'); if (b) openLb(+b.dataset.i);
+  });
+  function openLb(i) {
+    lbIdx = (i + lbList.length) % lbList.length;
+    const f = lbList[lbIdx];
+    $('#lb-img').src = src(f[0]); $('#lb-img').alt = f[2];
+    $('#lb-cap').textContent = `${f[2]} · ${lbIdx + 1} de ${lbList.length}`;
+    $('#lb').hidden = false; document.body.style.overflow = 'hidden';
+    [1, -1].forEach(k => { const g = lbList[(lbIdx + k + lbList.length) % lbList.length]; new Image().src = src(g[0]); });
+  }
+  function closeLb() { $('#lb').hidden = true; document.body.style.overflow = ''; }
+  $('#lb-x').onclick = closeLb;
+  $('#lb-prev').onclick = () => openLb(lbIdx - 1);
+  $('#lb-next').onclick = () => openLb(lbIdx + 1);
+  $('#lb').addEventListener('click', e => { if (e.target.id === 'lb') closeLb(); });
+  document.addEventListener('keydown', e => {
+    if ($('#lb').hidden) return;
+    if (e.key === 'Escape') closeLb();
+    if (e.key === 'ArrowLeft') openLb(lbIdx - 1);
+    if (e.key === 'ArrowRight') openLb(lbIdx + 1);
+  });
+  let tx = null;
+  $('#lb').addEventListener('touchstart', e => { tx = e.touches[0].clientX; }, { passive: true });
+  $('#lb').addEventListener('touchend', e => {
+    if (tx === null) return; const dx = e.changedTouches[0].clientX - tx; tx = null;
+    if (Math.abs(dx) > 50) openLb(lbIdx + (dx < 0 ? 1 : -1));
+  });
+  renderFilters(); renderGrid();
+
+  /* ---------- NAV / BARRA MÓVIL ---------- */
+  const nav = $('#nav'), mbar = $('#mbar');
+  function onScroll() {
+    const y = window.scrollY, h = window.innerHeight;
+    nav.classList.toggle('is-solid', y > 60);
+    const r = $('#reservar').getBoundingClientRect();
+    const inBook = r.top < h && r.bottom > 0;
+    mbar.classList.toggle('show', y > h * .7 && !inBook);
+    $('.fab').classList.toggle('hide', inBook);
+  }
+  window.addEventListener('scroll', onScroll, { passive: true }); onScroll();
+
+  /* ---------- RESERVAS ---------- */
+  const pad = n => String(n).padStart(2, '0');
+  const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+  const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate() + n); return iso(d); };
+  const nightsBetween = (a, b) => Math.round((parse(b) - parse(a)) / 864e5);
+  const fmtDate = s => parse(s).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+
+  const today = iso(new Date());
+  const maxDate = (() => { const d = new Date(); d.setMonth(d.getMonth() + 18); return iso(d); })();
+  const st = { in: null, out: null, adultos: 2, menores: 0, view: new Date(new Date().getFullYear(), new Date().getMonth(), 1) };
+  let CASA = null, busy = new Set(), MAX = 11, MIN_N = 2, SENA = 50;
+
+  function pricePerNight(g) {
+    const t = CASA.tarifas.por_huespedes;
+    for (const k of Object.keys(t)) {
+      const [a, b] = k.split('-').map(Number);
+      if (g >= a && g <= (b || a)) return t[k];
+    }
+    return null; // sin tarifa: se consulta
+  }
+  const guests = () => st.adultos + st.menores;
+  const firstBusyAfter = s => { let d = addDays(s, 1); while (d <= maxDate) { if (busy.has(d)) return d; d = addDays(d, 1); } return null; };
+  const rangeFree = (a, b) => { for (let d = a; d < b; d = addDays(d, 1)) if (busy.has(d)) return false; return true; };
+
+  function setMsg(t) { let m = $('#cal-msg'); if (!m) { m = document.createElement('p'); m.id = 'cal-msg'; m.className = 'cal__msg'; m.setAttribute('role', 'status'); $('#cal').appendChild(m); } m.textContent = t || ''; }
+
+  function renderCal() {
+    const wrap = $('#cal-months'); wrap.innerHTML = '';
+    const limitOut = st.in && !st.out ? firstBusyAfter(st.in) : null;
+    for (let k = 0; k < 2; k++) {
+      const first = new Date(st.view.getFullYear(), st.view.getMonth() + k, 1);
+      const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+      const lead = (first.getDay() + 6) % 7; // lunes primero
+      let html = `<div class="month"><h4>${(m => m[0].toUpperCase() + m.slice(1))(first.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' }))}</h4>
+        <div class="dow">${['lu', 'ma', 'mi', 'ju', 'vi', 'sá', 'do'].map(d => `<span>${d}</span>`).join('')}</div><div class="days">`;
+      html += '<span></span>'.repeat(lead);
+      for (let d = 1; d <= days; d++) {
+        const s = iso(new Date(first.getFullYear(), first.getMonth(), d));
+        const isBusy = busy.has(s);
+        const cls = ['day']; let dis = s < today || s > maxDate;
+        if (isBusy) cls.push('busy');
+        if (s === today) cls.push('today');
+        if (st.in && !st.out) {
+          // eligiendo salida: se puede salir el día que empieza otra reserva
+          if (s > st.in && limitOut && s > limitOut) dis = true;
+          if (isBusy && s === limitOut) { cls.push('co'); } else if (isBusy) dis = true;
+        } else if (isBusy) dis = true;
+        if (s === st.in) cls.push('start');
+        if (s === st.out) cls.push('end');
+        if (st.in && st.out && s > st.in && s < st.out) cls.push('in');
+        html += `<button type="button" class="${cls.join(' ')}" data-d="${s}" ${dis ? 'disabled' : ''} aria-label="${fmtDate(s)}${isBusy ? ', ocupado' : ''}"><span class="day__n">${d}</span></button>`;
+      }
+      wrap.insertAdjacentHTML('beforeend', html + '</div></div>');
+    }
+    const now = new Date(); $('#cal-prev').disabled = st.view <= new Date(now.getFullYear(), now.getMonth(), 1);
+    $('#cal-hint').textContent = !st.in ? 'Elegí la fecha de ingreso' : !st.out ? 'Ahora elegí la fecha de salida' : `${nightsBetween(st.in, st.out)} noches seleccionadas`;
+  }
+
+  function pick(s) {
+    setMsg('');
+    if (!st.in || st.out || s <= st.in) {
+      if (busy.has(s)) return;
+      st.in = s; st.out = null;
+    } else {
+      const n = nightsBetween(st.in, s);
+      if (!rangeFree(st.in, s)) { setMsg('Hay noches ocupadas en ese rango. Elegí otras fechas.'); return; }
+      if (n < MIN_N) { setMsg(`La estadía mínima es de ${MIN_N} noches.`); return; }
+      st.out = s;
+    }
+    renderCal(); renderQuote();
+  }
+
+  function renderQuote() {
+    const q = $('#quote'), btn = $('#btn-seguir');
+    $('#btn-limpiar').hidden = !st.in;
+    if (!st.in || !st.out) {
+      const t = CASA ? CASA.tarifas.por_huespedes : {};
+      const inK = k => { const [a, b] = k.split('-').map(Number); return guests() >= a && guests() <= (b || a); };
+      const tabla = Object.keys(t).sort((a, b) => parseInt(a) - parseInt(b)).map(k => `<li${inK(k) ? ' class="on"' : ''}><span>${k.includes('-') ? 'Hasta ' + k.split('-')[1] : k} huéspedes</span><b>${money(t[k])}</b></li>`).join('');
+      q.innerHTML = `<p class="quote__empty">${st.in ? `Ingreso: <b>${fmtDate(st.in)}</b>. Elegí la fecha de salida.` : 'Elegí la fecha de ingreso y de salida para ver el precio de tu estadía.'}</p>
+        ${tabla ? `<p class="rates__t">Precio por noche · casa completa</p><ul class="rates">${tabla}</ul>` : ''}`;
+      btn.disabled = true; return;
+    }
+    const n = nightsBetween(st.in, st.out), g = guests(), p = pricePerNight(g);
+    const dates = `<div class="quote__dates"><div><small>Ingreso</small><b>${fmtDate(st.in)}</b></div><div><small>Salida</small><b>${fmtDate(st.out)}</b></div></div>`;
+    if (p == null) {
+      q.innerHTML = dates + '<p class="quote__empty">Consultá el precio para esta cantidad de huéspedes.</p>';
+    } else {
+      const total = p * n, sena = total * SENA / 100;
+      q.innerHTML = dates +
+        `<div class="qrow"><span>${money(p)} × ${n} noches</span><span>${money(total)}</span></div>
+         <div class="qrow"><span>${g} ${g === 1 ? 'huésped' : 'huéspedes'}</span><span>casa completa</span></div>
+         <div class="qrow qrow--total"><span>Total</span><span>${money(total)}</span></div>
+         <div class="qrow qrow--sena"><span>Seña ${SENA} % para reservar</span><span>${money(sena)}</span></div>
+         <div class="qrow qrow--saldo"><span>Saldo al ingresar</span><span>${money(total - sena)}</span></div>`;
+    }
+    btn.disabled = false;
+  }
+
+  function renderGuests() {
+    $$('.step').forEach(el => {
+      const k = el.dataset.k, [minus, plus] = $$('button', el);
+      $('output', el).textContent = st[k];
+      minus.disabled = st[k] <= (k === 'adultos' ? 1 : 0);
+      plus.disabled = guests() >= MAX;
+    });
+    renderQuote();
+  }
+  $$('.step').forEach(el => el.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b || b.disabled) return;
+    const k = el.dataset.k, isPlus = b === $$('button', el)[1];
+    st[k] += isPlus ? 1 : -1; renderGuests();
+  }));
+
+  $('#cal-months').addEventListener('click', e => { const b = e.target.closest('.day'); if (b && !b.disabled) pick(b.dataset.d); });
+  // Vista previa del rango al pasar el mouse mientras se elige la salida
+  $('#cal-months').addEventListener('mouseover', e => {
+    const b = e.target.closest('.day'); if (!st.in || st.out) return;
+    const h = b && !b.disabled && b.dataset.d > st.in ? b.dataset.d : null;
+    $$('.day', $('#cal-months')).forEach(d => d.classList.toggle('hov', !!h && d.dataset.d > st.in && d.dataset.d <= h));
+  });
+  $('#cal-months').addEventListener('mouseleave', () => $$('.day.hov').forEach(d => d.classList.remove('hov')));
+  $('#cal-prev').onclick = () => { st.view = new Date(st.view.getFullYear(), st.view.getMonth() - 1, 1); renderCal(); };
+  $('#cal-next').onclick = () => { st.view = new Date(st.view.getFullYear(), st.view.getMonth() + 1, 1); renderCal(); };
+  $('#btn-limpiar').onclick = () => { st.in = st.out = null; setMsg(''); $('#form').hidden = true; $('#done').hidden = true; renderCal(); renderQuote(); };
+  $('#btn-seguir').onclick = () => { $('#form').hidden = false; $('#done').hidden = true; $('#form').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#form [name=nombre]').focus({ preventScroll: true }); };
+
+  /* ---------- FORMULARIO → WHATSAPP ---------- */
+  $('#form').addEventListener('submit', e => {
+    e.preventDefault();
+    const f = e.target, err = $('#form-err');
+    const nombre = f.nombre.value.trim(), tel = f.telefono.value.trim(), email = f.email.value.trim(), obs = f.obs.value.trim();
+    f.nombre.setAttribute('aria-invalid', !nombre); f.telefono.setAttribute('aria-invalid', tel.replace(/\D/g, '').length < 8);
+    if (!nombre) return err.textContent = 'Completá tu nombre y apellido.';
+    if (tel.replace(/\D/g, '').length < 8) return err.textContent = 'Completá un teléfono válido.';
+    if (!f.acepto.checked) return err.textContent = 'Para continuar tenés que aceptar las condiciones de la reserva.';
+    err.textContent = '';
+    const n = nightsBetween(st.in, st.out), g = guests(), p = pricePerNight(g);
+    const lines = [
+      'Hola! Quiero solicitar una reserva en Casa Campo Las Maravillas.', '',
+      `• Ingreso: ${fmtDate(st.in)} (de 15 a 18 h)`,
+      `• Salida: ${fmtDate(st.out)} (hasta las 11 h)`,
+      `• Noches: ${n}`,
+      `• Huéspedes: ${g} (${st.adultos} ${st.adultos === 1 ? 'adulto' : 'adultos'}${st.menores ? ` y ${st.menores} ${st.menores === 1 ? 'menor' : 'menores'}` : ''})`
+    ];
+    if (p != null) {
+      const total = p * n;
+      lines.push(`• Total: ${money(total)} (${money(p)} por noche)`, `• Seña ${SENA} %: ${money(total * SENA / 100)}`);
+      $('#pay-amount').textContent = money(total * SENA / 100);
+    } else { lines.push('• Precio: a consultar'); $('#pay-amount').textContent = 'el 50 % del total'; }
+    lines.push('', `Nombre: ${nombre}`, `Teléfono: ${tel}`);
+    if (email) lines.push(`Correo: ${email}`);
+    if (obs) lines.push(`Comentario: ${obs}`);
+    lines.push('', 'Leí y acepto las condiciones de la reserva.');
+    $('#wa-msg').value = lines.join('\n'); updateWa();
+    f.hidden = true; $('#done').hidden = false;
+    $('#done').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  function updateWa() { $('#wa-link').href = `https://wa.me/${CASA ? CASA.contacto.whatsapp : '5492664546558'}?text=${encodeURIComponent($('#wa-msg').value)}`; }
+  $('#wa-msg').addEventListener('input', updateWa);
+  $('#btn-volver').onclick = () => { $('#done').hidden = true; $('#form').hidden = false; $('#form').scrollIntoView({ behavior: 'smooth' }); };
+  $('#copy-alias').onclick = async () => {
+    const t = $('#alias').textContent, b = $('#copy-alias');
+    try { await navigator.clipboard.writeText(t); } catch {
+      const r = document.createRange(); r.selectNodeContents($('#alias')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand('copy');
+    }
+    b.textContent = '¡Copiado!'; setTimeout(() => { b.textContent = 'Copiar alias'; }, 2000);
+  };
+
+  /* ---------- CARGA DE DATOS ---------- */
+  const getJson = u => fetch(u, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+  Promise.all([getJson('data/casa.json'), getJson('data/ocupadas-sync.json').catch(() => null)]).then(([data, sync]) => {
+    CASA = data;
+    MAX = data.capacidad_maxima || 11;
+    MIN_N = data.tarifas.estadia_minima_noches || 2;
+    SENA = data.reserva.sena_porcentaje || 50;
+    busy = new Set();
+    const bloques = [...(data.ocupadas || []), ...((sync && sync.ocupadas) || [])];
+    bloques.forEach(b => { for (let d = b.desde; d < b.hasta; d = addDays(d, 1)) busy.add(d); });
+    $('#aviso-cal').hidden = !!data.calendario_actualizado;
+    if (sync && sync.actualizado && Object.values(sync.fuentes || {}).some(f => f.ok)) {
+      const mins = Math.max(1, Math.round((Date.now() - new Date(sync.actualizado)) / 6e4));
+      const hace = mins < 60 ? `hace ${mins} min` : mins < 1440 ? `hace ${Math.round(mins / 60)} h` : `hace ${Math.round(mins / 1440)} días`;
+      const p = document.createElement('p'); p.className = 'cal__sync';
+      p.textContent = `Calendario sincronizado automáticamente · actualizado ${hace}`;
+      $('#cal').appendChild(p);
+    }
+    $('#alias').textContent = data.reserva.pago.alias;
+    if (data.contacto.tiktok_url) $('#tiktok').href = data.contacto.tiktok_url;
+    const min = Math.min(...Object.values(data.tarifas.por_huespedes));
+    $('#mbar-price').textContent = 'Desde ' + money(min);
+    renderCal(); renderGuests();
+  }).catch(() => {
+    $('#cal-months').innerHTML = '<p>No pudimos cargar el calendario. Escribinos por WhatsApp y te pasamos disponibilidad y precio.</p>';
+  });
+})();

@@ -1,0 +1,41 @@
+# Casa Campo Las Maravillas
+
+> Casa de campo completa para alquiler temporario, para hasta 11 huéspedes, en Bajo Las Maravillas (Huella Serrana 900), a 10 minutos en auto de Villa de Merlo, San Luis, Argentina, al pie de las Sierras de los Comechingones. Se reserva directo con los dueños por WhatsApp, sin crear cuenta y sin comisiones.
+
+## La casa
+- Casa completa de 250 m²: 3 dormitorios, 1 baño, living comedor, cocina completamente equipada.
+- Camas: cada dormitorio tiene 1 cama doble y 1 cama individual; hay 1 sofá cama en el living (7 camas en total).
+- Exterior: pileta al aire libre de temporada, parque amplio con árboles, asador, mesas de exterior, balcón y terraza con vista a las sierras.
+- Incluye: WiFi, TV de pantalla plana, estacionamiento privado gratis, ropa de cama, toallas y toallones.
+- Se admiten mascotas sin cargo. No se fuma dentro de la casa. No hay cunas ni camas supletorias.
+
+## Precios (por noche, casa completa, en pesos argentinos)
+- Hasta 6 huéspedes: $210.000
+- 7 huéspedes: $220.000
+- 8 huéspedes: $230.000
+- 9 huéspedes: $240.000
+- 10 u 11 huéspedes: $250.000
+- No hay diferencia de precio por edad. No hay descuentos. Estadía mínima: 2 noches.
+
+## Reserva y pago
+- Seña del 50 % por transferencia (alias gonzalobiassi1, titular Gonzalo Amir Biassi). El 50 % restante se paga al ingresar.
+- La reserva se confirma cuando la seña está acreditada y los dueños la confirman.
+- Sin seña, las fechas quedan con preferencia por 48 horas.
+- No hay cancelación gratuita: la seña no es reembolsable.
+- Ingreso de 15:00 a 18:00. Salida hasta las 11:00.
+
+## Contacto
+- WhatsApp: +54 9 266 454-6558 (Gonzalo Amir Biassi, encargado de las estadías)
+- TikTok: Casa Campo Las Maravillas
+
+## Cerca
+- Villa de Merlo (centro): 8 km, 10 minutos en auto
+- Piedra Blanca: 5 km
+- Reserva Natural Mogote Bayo: 11 km
+- Aeropuerto Valle del Conlara: 21 km
+
+## Datos
+- [Sitio web](https://belennayla.github.io/casa-campo-las-maravillas/)
+- [Información completa en JSON](https://belennayla.github.io/casa-campo-las-maravillas/data/casa.json)
+- [Fechas ocupadas sincronizadas con Airbnb, Booking y Vrbo](https://belennayla.github.io/casa-campo-las-maravillas/data/ocupadas-sync.json)
+- [Calendario iCal de fechas no disponibles](https://belennayla.github.io/casa-campo-las-maravillas/calendario.ics)
