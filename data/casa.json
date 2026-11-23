@@ -48,7 +48,7 @@
   "tarifas": {
     "moneda": "ARS",
     "modalidad": "Precio por noche para la casa completa según la cantidad total de huéspedes. No hay diferencia por edad.",
-    "por_huespedes": { "1-6": 210000, "7": 220000, "8": 230000, "9": 240000, "10": 250000, "11": 250000 },
+    "por_huespedes": { "1-4": 200000, "5": 209000, "6": 217000, "7": 226000, "8": 234000, "9": 243000, "10": 251000, "11": 260000 },
     "estadia_minima_noches": 2,
     "descuentos": "No hay descuentos."
   },

@@ -10,11 +10,14 @@
 - Se admiten mascotas sin cargo. No se fuma dentro de la casa. No hay cunas ni camas supletorias.
 
 ## Precios (por noche, casa completa, en pesos argentinos)
-- Hasta 6 huéspedes: $210.000
-- 7 huéspedes: $220.000
-- 8 huéspedes: $230.000
-- 9 huéspedes: $240.000
-- 10 u 11 huéspedes: $250.000
+- Hasta 4 huéspedes: $200.000
+- 5 huéspedes: $209.000
+- 6 huéspedes: $217.000
+- 7 huéspedes: $226.000
+- 8 huéspedes: $234.000
+- 9 huéspedes: $243.000
+- 10 huéspedes: $251.000
+- 11 huéspedes: $260.000
 - No hay diferencia de precio por edad. No hay descuentos. Estadía mínima: 2 noches.
 
 ## Reserva y pago
