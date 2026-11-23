@@ -205,6 +205,8 @@ input[aria-invalid="true"] { border-color: var(--terra); }
 /* Location */
 .loc { display: grid; grid-template-columns: 1.1fr 1fr; gap: 2rem; align-items: start; }
 .loc__map iframe { width: 100%; aspect-ratio: 4/3; border: 0; border-radius: var(--r); box-shadow: var(--shadow); margin-bottom: 1rem; background: var(--busy); }
+.loc__btns { display: flex; flex-wrap: wrap; gap: .6rem; }
+.hero__rating a { color: #fff; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(255,255,255,.5); }
 .loc__addr { color: var(--muted); font-size: .92rem; margin: .6rem 0 0; }
 .loc__near h3 { margin-bottom: 1rem; }
 .places { list-style: none; padding: 0; margin: 0; }
