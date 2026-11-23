@@ -4,8 +4,8 @@
   "ubicacion": {
     "zona": "Bajo Las Maravillas, a 10 minutos de Villa de Merlo (San Luis), al pie de las Sierras de los Comechingones",
     "direccion": "Huella Serrana 900, Bajo Las Maravillas",
-    "plus_code": "MXV9+F5 La Ramada, Córdoba",
-    "mapa": "https://share.google/3dPakMTsBouiyEcIu",
+    "coordenadas": { "lat": -32.3041064, "lng": -65.0297512 },
+    "mapa": "https://www.google.com/maps/place/Casa+Campo+Las+Maravillas/@-32.3041064,-65.0297512,17z/data=!4m6!3m5!1s0x95d2e100358d4385:0xdaf48f5e78b94b45!8m2!3d-32.3041064!4d-65.0297512",
     "cerca": [
       { "lugar": "Villa de Merlo (centro)", "distancia": "8 km · 10 min en auto" },
       { "lugar": "Piedra Blanca", "distancia": "5 km" },
