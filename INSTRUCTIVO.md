@@ -1,12 +1,12 @@
 # Casa Campo Las Maravillas · Instructivo
 
-Web de reservas directas. Se publica gratis en GitHub Pages y sincroniza sola los calendarios de Airbnb, Booking y Vrbo cada 30 minutos.
+Web de reservas directas. Se publica gratis en GitHub Pages y sincroniza sola los calendarios de Airbnb, Booking y Vrbo varias veces por día (GitHub decide el horario exacto; para sincronizar en el momento: pestaña Actions → Run workflow).
 
 ## Cómo funciona la sincronización
 
 ```
 Airbnb ─┐                          ┌─► la web muestra esos días como ocupados
-Booking ┼─► GitHub (cada 30 min) ──┤
+Booking ┼─► GitHub (varias por día)┤
 Vrbo  ──┘   + reservas directas    └─► genera un link para cada plataforma
                                        (así las reservas directas y las de las otras
                                         plataformas también se bloquean en cada una)

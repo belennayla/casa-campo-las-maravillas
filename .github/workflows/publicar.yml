@@ -1,5 +1,6 @@
 # Publica la web en GitHub Pages y sincroniza los calendarios.
-# Corre: cada vez que se suben cambios, cada 30 minutos, y a mano desde la pestaña Actions.
+# Corre: cada vez que se suben cambios, de forma programada, y a mano desde la pestaña Actions.
+# (GitHub no garantiza el horario de las ejecuciones programadas: pueden demorarse algunas horas.)
 name: Sincronizar calendarios y publicar
 
 on:
@@ -19,15 +20,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publicar:
+  preparar:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
 
@@ -40,9 +38,25 @@ jobs:
           SITE_URL: ${{ steps.pages.outputs.base_url }}
         run: node scripts/sincronizar.js
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: .
 
+  publicar:
+    needs: preparar
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy2.outputs.page_url }}
+    steps:
       - id: deploy
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      # A veces GitHub tarda en registrar el paquete: se espera y se reintenta.
+      - if: steps.deploy.outcome == 'failure'
+        run: sleep 45
+
+      - id: deploy2
+        if: steps.deploy.outcome == 'failure'
         uses: actions/deploy-pages@v4

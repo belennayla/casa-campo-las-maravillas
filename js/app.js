@@ -273,7 +273,7 @@
     $('#aviso-cal').hidden = !!data.calendario_actualizado;
     if (sync && sync.actualizado && Object.values(sync.fuentes || {}).some(f => f.ok)) {
       const mins = Math.max(1, Math.round((Date.now() - new Date(sync.actualizado)) / 6e4));
-      const hace = mins < 60 ? `hace ${mins} min` : mins < 1440 ? `hace ${Math.round(mins / 60)} h` : `hace ${Math.round(mins / 1440)} días`;
+      const hace = mins < 60 ? `hace ${mins} min` : mins < 1440 ? `hace ${Math.round(mins / 60)} h` : (d => `hace ${d} ${d === 1 ? 'día' : 'días'}`)(Math.round(mins / 1440));
       const p = document.createElement('p'); p.className = 'cal__sync';
       p.textContent = `Calendario sincronizado automáticamente · actualizado ${hace}`;
       $('#cal').appendChild(p);
