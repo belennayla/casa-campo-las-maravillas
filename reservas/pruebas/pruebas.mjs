@@ -89,6 +89,13 @@ s = await fetch(BASE + '/api/salud', { headers: { origin: 'https://casacampolasm
 if (REMOTO) { s = await fetch(BASE + '/__scheduled'); ok(s.status === 404, 'la ruta de pruebas /__scheduled no existe en el servidor publicado'); }
 s = await fetch(BASE + '/api/salud'); const txt = await s.text(); ok(!/CLAVE|token|secret/i.test(txt), 'la respuesta pública no expone secretos');
 
+console.log('10) Límite de consultas por persona (va al final: deja la IP limitada un minuto)');
+const rafaga = await Promise.all(Array.from({ length: 35 }, () => post('/api/cotizar', { ingreso: A, salida: B, adultos: 2 })));
+const n429 = rafaga.filter(x => x.status === 429).length;
+ok(n429 > 0 && rafaga.every(x => x.status === 200 || x.status === 429), `35 consultas seguidas: ${n429} frenadas con 429, sin errores`);
+const una429 = rafaga.find(x => x.status === 429);
+ok(una429 && una429.headers.get('retry-after') === '60', 'el 429 indica cuándo reintentar (Retry-After: 60)');
+
 console.log(fallas ? `\n${fallas} pruebas fallaron` : '\nTodas las pruebas pasaron');
 console.log('IDS_CREADOS=' + [...creados].filter(Boolean).join(','));
 process.exit(fallas ? 1 : 0);

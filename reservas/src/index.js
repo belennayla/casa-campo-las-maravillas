@@ -22,13 +22,19 @@ export default {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     try {
       if (url.pathname === '/api/salud' && req.method === 'GET') return json(estadoServicio(env), 200, cors);
-      if (url.pathname === '/api/cotizar' && req.method === 'POST') return json(await cotizar(await leerJson(req), env), 200, cors);
-      if (url.pathname === '/api/bloqueos' && req.method === 'POST') return await crearBloqueo(req, env, cors);
+      if (url.pathname === '/api/cotizar' && req.method === 'POST') {
+        await limitar(env.LIMITE_COTIZAR, req);
+        return json(await cotizar(await leerJson(req), env), 200, cors);
+      }
+      if (url.pathname === '/api/bloqueos' && req.method === 'POST') {
+        if (!(await claveDePruebaValida(req, env))) await limitar(env.LIMITE_BLOQUEOS, req);
+        return await crearBloqueo(req, env, cors);
+      }
       const m = url.pathname.match(/^\/api\/reservas\/([0-9a-f-]{36})$/);
       if (m && req.method === 'GET') return await verReserva(m[1], env, cors);
       return json({ error: 'no_encontrado' }, 404, cors);
     } catch (e) {
-      if (e instanceof ErrorUsuario) return json({ error: e.codigo, mensaje: e.message }, e.status, cors);
+      if (e instanceof ErrorUsuario) return json({ error: e.codigo, mensaje: e.message }, e.status, e.status === 429 ? { ...cors, 'retry-after': '60' } : cors);
       console.error('Error interno', e && e.stack || e);
       return json({ error: 'error_interno', mensaje: 'No pudimos procesar la solicitud. Escribinos por WhatsApp.' }, 500, cors);
     }
@@ -53,9 +59,17 @@ function json(data, status, headers) {
 function corsHeaders(req, env) {
   const origen = req.headers.get('origin');
   const permitidos = (env.ORIGENES_PERMITIDOS || '').split(',').map(s => s.trim());
-  const h = { 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'content-type, idempotency-key', 'vary': 'origin' };
+  const h = { 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'content-type, idempotency-key', 'access-control-max-age': '86400', 'vary': 'origin' };
   if (origen && permitidos.includes(origen)) h['access-control-allow-origin'] = origen;
   return h;
+}
+
+// Límite por persona (IP) con el Rate Limiting de Workers (gratuito). Si el límite no está configurado, no bloquea.
+async function limitar(limitador, req) {
+  if (!limitador) return;
+  const ip = req.headers.get('cf-connecting-ip') || 'sin-ip';
+  const { success } = await limitador.limit({ key: ip });
+  if (!success) throw new ErrorUsuario('demasiadas_solicitudes', 'Hiciste muchas consultas seguidas. Esperá un minuto o escribinos por WhatsApp.', 429);
 }
 
 async function leerJson(req) {

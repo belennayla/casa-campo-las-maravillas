@@ -39,9 +39,13 @@ jobs:
           SITE_URL: ${{ steps.pages.outputs.base_url }}
         run: node scripts/sincronizar.js
 
+      # Solo se publican los archivos de la web (lista blanca). La carpeta reservas/ y los archivos internos quedan afuera.
+      - name: Armar la web pública
+        run: node scripts/armar-sitio.js
+
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: .
+          path: _site
 
   publicar:
     needs: preparar

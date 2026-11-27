@@ -69,6 +69,9 @@
     { "plataforma": "Booking.com", "puntaje": "10/10", "comentarios": 3 },
     { "plataforma": "Google", "puntaje": "4,9/5", "comentarios": 12 }
   ],
+  "api_reservas": "https://reservas-casacampo.reservas-casacampo.workers.dev",
+  "cotizacion_en_linea": true,
+  "_nota_api": "Servidor de reservas (Cloudflare). La web solo lo usa para verificar precio y disponibilidad; no crea reservas. Poner cotizacion_en_linea en false para desconectarlo.",
   "calendario_actualizado": true,
   "_nota_calendario": "true = los dueños confirman que todas las reservas directas (no hechas por plataformas) están cargadas en 'ocupadas'. Aunque sea true, la web muestra el aviso 'disponibilidad a confirmar' si la sincronización con las plataformas no se pudo verificar.",
   "fuentes_esperadas": ["booking", "airbnb"],

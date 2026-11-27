@@ -178,6 +178,11 @@ h4 { margin: 0 0 .5rem; font-size: 1rem; }
 .qrow--total { border-top: 1px solid var(--line); margin-top: .4rem; padding-top: .6rem; font-weight: 700; font-size: 1.1rem; }
 .qrow--sena { color: var(--sage-d); font-weight: 700; }
 .quote__warn { margin: .7rem 0 0; padding: .55rem .7rem; background: #fbeedd; color: #6d4a22; border-radius: 8px; font-size: .88rem; }
+.quote__srv { margin: .6rem 0 0; font-size: .85rem; color: var(--muted); min-height: 1.2em; }
+.quote__srv:empty { display: none; }
+.quote__srv--ok { color: var(--sage-d); }
+.quote__srv--ok::before { content: "✓ "; font-weight: 700; }
+.quote__srv--no { color: var(--terra-d); font-weight: 500; }
 .qrow--saldo { color: var(--muted); font-size: .9rem; }
 
 /* Form */

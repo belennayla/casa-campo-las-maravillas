@@ -181,15 +181,70 @@
       q.innerHTML = dates + '<p class="quote__empty">Consultá el precio para esta cantidad de huéspedes.</p>';
     } else {
       const total = p * n, sena = total * SENA / 100;
-      q.innerHTML = dates +
-        `<div class="qrow"><span>${money(p)} × ${n} noches</span><span>${money(total)}</span></div>
-         <div class="qrow"><span>${g} ${g === 1 ? 'huésped' : 'huéspedes'}</span><span>casa completa</span></div>
-         <div class="qrow qrow--total"><span>Total</span><span>${money(total)}</span></div>
-         <div class="qrow qrow--sena"><span>Seña ${SENA} % para reservar</span><span>${money(sena)}</span></div>
-         <div class="qrow qrow--saldo"><span>Saldo al ingresar</span><span>${money(total - sena)}</span></div>
-         ${VERIFICADO ? '' : '<p class="quote__warn">Disponibilidad a confirmar por WhatsApp antes de pagar la seña.</p>'}`;
+      q.innerHTML = dates + `<div id="quote-filas">${filas(p, n, total, sena, total - sena)}</div>
+         ${VERIFICADO ? '' : '<p class="quote__warn">Disponibilidad a confirmar por WhatsApp antes de pagar la seña.</p>'}
+         <p class="quote__srv" id="quote-srv" role="status"></p>`;
     }
     btn.disabled = false;
+    verificarServidor();
+  }
+  function filas(p, n, total, sena, saldo) {
+    const g = guests();
+    return `<div class="qrow"><span>${money(p)} × ${n} noches</span><span>${money(total)}</span></div>
+      <div class="qrow"><span>${g} ${g === 1 ? 'huésped' : 'huéspedes'}</span><span>casa completa</span></div>
+      <div class="qrow qrow--total"><span>Total</span><span>${money(total)}</span></div>
+      <div class="qrow qrow--sena"><span>Seña ${SENA} % para reservar</span><span>${money(sena)}</span></div>
+      <div class="qrow qrow--saldo"><span>Saldo al ingresar</span><span>${money(saldo)}</span></div>`;
+  }
+
+  /* ---------- VERIFICACIÓN CON EL SERVIDOR DE RESERVAS (solo cotización) ----------
+     El servidor recalcula el precio y revisa disponibilidad (incluye reservas directas y bloqueos).
+     No crea reservas ni bloqueos. Si no responde, la web sigue funcionando con WhatsApp. */
+  let SRV = null, srvSeq = 0, srvTimer = null;
+  const claveSrv = () => `${st.in}|${st.out}|${st.adultos}|${st.menores}`;
+  function verificarServidor() {
+    const el = $('#quote-srv'); if (!el) return;
+    const api = CASA && CASA.cotizacion_en_linea && CASA.api_reservas;
+    if (!api) { el.remove(); return; }
+    const key = claveSrv();
+    if (SRV && SRV.key === key) return mostrarSrv(SRV);
+    el.className = 'quote__srv'; el.textContent = 'Verificando precio y disponibilidad…';
+    const seq = ++srvSeq;
+    clearTimeout(srvTimer);
+    srvTimer = setTimeout(async () => {
+      const res = { key, data: null, error: null };
+      try {
+        const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 7000);
+        const r = await fetch(api.replace(/\/$/, '') + '/api/cotizar', {
+          method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
+          body: JSON.stringify({ ingreso: st.in, salida: st.out, adultos: st.adultos, menores: st.menores })
+        });
+        clearTimeout(to);
+        res.data = await r.json().catch(() => null);
+        if (!r.ok) res.error = r.status === 429 ? 'limite' : (res.data && res.data.mensaje) || 'error';
+      } catch { res.error = 'red'; }
+      if (seq !== srvSeq || key !== claveSrv()) return; // llegó una respuesta vieja
+      SRV = res; mostrarSrv(res);
+    }, 350);
+  }
+  function mostrarSrv({ data, error }) {
+    const el = $('#quote-srv'), btn = $('#btn-seguir'); if (!el) return;
+    if (error || !data) {
+      el.className = 'quote__srv quote__srv--neutral';
+      el.textContent = 'Disponibilidad pendiente de confirmación. ' + (error === 'limite'
+        ? 'Hiciste muchas consultas seguidas: esperá un minuto o enviá la solicitud y te confirmamos por WhatsApp.'
+        : (error && error !== 'red' && error !== 'error' ? error + ' ' : '') + 'No pudimos verificar en este momento: podés enviar la solicitud igual y te confirmamos precio y disponibilidad por WhatsApp.');
+      return;
+    }
+    if (!data.disponible) {
+      el.className = 'quote__srv quote__srv--no';
+      el.textContent = 'Esas fechas no están disponibles. Elegí otras fechas o consultanos por WhatsApp.';
+      btn.disabled = true; return;
+    }
+    const n = nightsBetween(st.in, st.out), p = pricePerNight(guests());
+    if (p == null || data.total !== p * n) $('#quote-filas') && ($('#quote-filas').innerHTML = filas(data.precio_noche, n, data.total, data.sena, data.saldo));
+    el.className = 'quote__srv quote__srv--ok';
+    el.textContent = 'Precio verificado por el sistema. Te confirmamos la disponibilidad por WhatsApp antes de pagar la seña.';
   }
 
   function renderGuests() {
@@ -230,7 +285,10 @@
     if (tel.replace(/\D/g, '').length < 8) return err.textContent = 'Completá un teléfono válido.';
     if (!f.acepto.checked) return err.textContent = 'Para continuar tenés que aceptar las condiciones de la reserva.';
     err.textContent = '';
-    const n = nightsBetween(st.in, st.out), g = guests(), p = pricePerNight(g);
+    const n = nightsBetween(st.in, st.out), g = guests();
+    // Si el servidor verificó estas mismas fechas y huéspedes, se usan sus montos.
+    const srvOk = SRV && SRV.key === claveSrv() && SRV.data && !SRV.error && SRV.data.disponible;
+    const p = srvOk ? SRV.data.precio_noche : pricePerNight(g);
     const lines = [
       'Hola! Quiero solicitar una reserva en Casa Campo Las Maravillas.', '',
       `• Ingreso: ${fmtDate(st.in)} (de 15 a 18 h)`,
