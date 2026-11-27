@@ -51,6 +51,10 @@ function parseIcal(texto) {
     .filter(e => e.estado !== 'CANCELLED')
     .map(e => ({ desde: e.desde, hasta: e.hasta && e.hasta > e.desde ? e.hasta : addDays(e.desde, 1) }));
 }
+function validoBloque(b) {
+  const f = /^\d{4}-\d{2}-\d{2}$/;
+  return !!b && f.test(b.desde) && f.test(b.hasta) && b.hasta > b.desde;
+}
 function fecha(v) {
   const m = v.match(/^(\d{4})(\d{2})(\d{2})/);
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
@@ -100,7 +104,8 @@ async function main() {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const texto = await r.text();
       if (!texto.includes('BEGIN:VCALENDAR')) throw new Error('la respuesta no es un calendario');
-      const evs = parseIcal(texto).filter(b => b.hasta > desdeHoy);
+      if (!texto.includes('END:VCALENDAR')) throw new Error('el calendario llegó incompleto');
+      const evs = parseIcal(texto).filter(b => b.hasta > desdeHoy && validoBloque(b));
       evs.forEach(b => bloques.push({ ...b, fuente: f.nombre }));
       estado[f.nombre] = { ok: true, eventos: evs.length, actualizado: new Date().toISOString() };
       console.log(`✓ ${f.nombre}: ${evs.length} bloques`);
@@ -113,11 +118,20 @@ async function main() {
   }
 
   bloques.sort((a, b) => a.desde.localeCompare(b.desde));
-  const sync = { actualizado: new Date().toISOString(), fuentes: estado, ocupadas: bloques };
+  // Solo fechas y origen: nunca nombres, descripciones ni datos de huéspedes.
+  const sync = {
+    actualizado: new Date().toISOString(),
+    fuentes_configuradas: fuentes.map(f => f.nombre),
+    fuentes: estado,
+    ocupadas: bloques.map(b => ({ desde: b.desde, hasta: b.hasta, fuente: b.fuente }))
+  };
   fs.writeFileSync(path.join(ROOT, 'data/ocupadas-sync.json'), JSON.stringify(sync, null, 1));
+  if (!fuentes.length) console.log('⚠ No hay calendarios configurados (secreto ICAL_URLS vacío o inexistente).');
 
   // Reservas directas y bloqueos manuales (sin datos personales)
-  const directas = (casa.ocupadas || []).filter(b => b.hasta > desdeHoy).map(b => ({ desde: b.desde, hasta: b.hasta, fuente: 'directa' }));
+  const invalidas = (casa.ocupadas || []).filter(b => !validoBloque(b));
+  invalidas.forEach(b => console.log(`⚠ Bloque manual inválido en data/casa.json, revisar: ${JSON.stringify({ desde: b.desde, hasta: b.hasta })}`));
+  const directas = (casa.ocupadas || []).filter(b => validoBloque(b) && b.hasta > desdeHoy).map(b => ({ desde: b.desde, hasta: b.hasta, fuente: 'directa' }));
   const todas = [...directas, ...bloques];
   fs.writeFileSync(path.join(ROOT, 'calendario.ics'), crearIcal(todas, 'todas'));
   const nombres = new Set([...PLATAFORMAS, ...fuentes.map(f => f.nombre)]);
@@ -126,4 +140,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch(e => { console.error(e); process.exit(1); });
-module.exports = { parseIcal, crearIcal };
+module.exports = { parseIcal, crearIcal, validoBloque };

@@ -186,7 +186,8 @@
          <div class="qrow"><span>${g} ${g === 1 ? 'huésped' : 'huéspedes'}</span><span>casa completa</span></div>
          <div class="qrow qrow--total"><span>Total</span><span>${money(total)}</span></div>
          <div class="qrow qrow--sena"><span>Seña ${SENA} % para reservar</span><span>${money(sena)}</span></div>
-         <div class="qrow qrow--saldo"><span>Saldo al ingresar</span><span>${money(total - sena)}</span></div>`;
+         <div class="qrow qrow--saldo"><span>Saldo al ingresar</span><span>${money(total - sena)}</span></div>
+         ${VERIFICADO ? '' : '<p class="quote__warn">Disponibilidad a confirmar por WhatsApp antes de pagar la seña.</p>'}`;
     }
     btn.disabled = false;
   }
@@ -261,6 +262,27 @@
     b.textContent = '¡Copiado!'; setTimeout(() => { b.textContent = 'Copiar alias'; }, 2000);
   };
 
+  /* ---------- VERIFICACIÓN DE LA SINCRONIZACIÓN ----------
+     Un calendario vacío NO significa que no haya reservas: solo se considera
+     verificado si todas las fuentes esperadas respondieron bien y hace poco. */
+  let VERIFICADO = false;
+  const nombreFuente = n => ({ booking: 'Booking', airbnb: 'Airbnb', vrbo: 'Vrbo' })[n] || n;
+  function estadoSync(data, sync) {
+    const p = [], esperadas = data.fuentes_esperadas || [], maxH = data.sync_max_horas || 26;
+    if (!sync || !sync.actualizado) p.push('no pudimos comprobar la sincronización con las plataformas');
+    else {
+      const fuentes = sync.fuentes || {};
+      if (!Object.keys(fuentes).length) p.push('no hay calendarios de plataformas conectados');
+      else esperadas.forEach(n => { if (!fuentes[n]) p.push(`el calendario de ${nombreFuente(n)} no está conectado`); });
+      Object.entries(fuentes).forEach(([n, f]) => { if (!f.ok) p.push(`no pudimos actualizar el calendario de ${nombreFuente(n)}`); });
+      const horas = (Date.now() - new Date(sync.actualizado)) / 36e5;
+      if (!(horas <= maxH)) p.push(`la última sincronización fue hace más de ${maxH} horas`);
+    }
+    if (!data.calendario_actualizado) p.push('las reservas directas todavía no están todas cargadas');
+    if (![...busy].some(d => d >= today)) p.push('el calendario no muestra ninguna fecha ocupada');
+    return p;
+  }
+
   /* ---------- CARGA DE DATOS ---------- */
   const getJson = u => fetch(u, { cache: 'no-cache' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
   Promise.all([getJson('data/casa.json'), getJson('data/ocupadas-sync.json').catch(() => null)]).then(([data, sync]) => {
@@ -270,14 +292,21 @@
     SENA = data.reserva.sena_porcentaje || 50;
     busy = new Set();
     const bloques = [...(data.ocupadas || []), ...((sync && sync.ocupadas) || [])];
-    bloques.forEach(b => { for (let d = b.desde; d < b.hasta; d = addDays(d, 1)) busy.add(d); });
-    $('#aviso-cal').hidden = !!data.calendario_actualizado;
-    if (sync && sync.actualizado && Object.values(sync.fuentes || {}).some(f => f.ok)) {
+    const valido = b => b && /^\d{4}-\d{2}-\d{2}$/.test(b.desde) && /^\d{4}-\d{2}-\d{2}$/.test(b.hasta) && b.hasta > b.desde;
+    bloques.filter(valido).forEach(b => { for (let d = b.desde; d < b.hasta; d = addDays(d, 1)) busy.add(d); });
+    const problemas = estadoSync(data, sync);
+    VERIFICADO = !problemas.length;
+    if (VERIFICADO) {
+      $('#aviso-cal').hidden = true;
       const mins = Math.max(1, Math.round((Date.now() - new Date(sync.actualizado)) / 6e4));
       const hace = mins < 60 ? `hace ${mins} min` : mins < 1440 ? `hace ${Math.round(mins / 60)} h` : (d => `hace ${d} ${d === 1 ? 'día' : 'días'}`)(Math.round(mins / 1440));
       const p = document.createElement('p'); p.className = 'cal__sync';
-      p.textContent = `Calendario sincronizado automáticamente · actualizado ${hace}`;
+      p.textContent = `Sincronizado con ${Object.keys(sync.fuentes).map(nombreFuente).join(', ')} · actualizado ${hace}`;
       $('#cal').appendChild(p);
+    } else {
+      const t = problemas.join('; ');
+      $('#aviso-cal').textContent = `Disponibilidad a confirmar: ${t}. Antes de reservar te confirmamos las fechas por WhatsApp.`;
+      $('#aviso-cal').hidden = false;
     }
     $('#alias').textContent = data.reserva.pago.alias;
     if (data.contacto.tiktok_url) $('#tiktok').href = data.contacto.tiktok_url;

@@ -2,3 +2,8 @@
 node_modules/
 Thumbs.db
 desktop.ini
+
+# Generados en cada publicacion por scripts/sincronizar.js (no editar ni subir)
+data/ocupadas-sync.json
+calendario*.ics
+prueba-ical/
