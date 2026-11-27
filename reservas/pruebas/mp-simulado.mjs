@@ -40,6 +40,8 @@ http.createServer(async (req, res) => {
     if (previa) return previa.cuerpo === cuerpo ? responder(res, 201, ordenes.get(previa.id)) : responder(res, 409, { error: 'idempotency_key_already_used' });
     const b = JSON.parse(cuerpo);
     if (b.type !== 'online' || b.processing_mode !== 'manual' || !b.total_amount) return responder(res, 400, { error: 'invalid_body' });
+    if ((b.items || []).some(i => String(i.external_code || '').length > 30)) return responder(res, 400, { errors: [{ code: 'property_value', message: 'Invalid value for property', details: ["'$.items[0].external_code' - length must be <= 30"] }] });
+    if (String(b.external_reference || '').length > 64) return responder(res, 400, { errors: [{ code: 'property_value', message: 'external_reference too long' }] });
     const suma = (b.items || []).reduce((s, i) => s + Number(i.unit_price) * Number(i.quantity), 0);
     if (Math.round(suma * 100) !== Math.round(Number(b.total_amount) * 100)) return responder(res, 400, { error: 'order_items_total_amount_mismatch' });
     const id = nuevoId(); creadas++;

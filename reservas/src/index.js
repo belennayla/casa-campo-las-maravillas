@@ -43,6 +43,7 @@ export default {
         return await crearOrdenSena(req, env, cors);
       }
       if (url.pathname === '/api/webhooks/mercadopago' && req.method === 'POST') return await recibirWebhook(req, env, ctx);
+      if (url.pathname === '/api/pruebas/mp-cuenta' && req.method === 'GET') return await diagnosticoCuenta(req, env, cors);
       const mp = url.pathname.match(/^\/api\/pruebas\/reservas\/([0-9a-f-]{36})$/);
       if (mp && req.method === 'GET') return await detallePrueba(mp[1], req, env, cors);
       return json({ error: 'no_encontrado' }, 404, cors);
@@ -402,7 +403,7 @@ async function crearOrdenSena(req, env, cors) {
     external_reference: r.id,
     expiration_time: `PT${Math.max(1, Math.floor(restante / 60))}M`, // vence junto con el bloqueo
     description: 'Seña 50 % · Casa Campo Las Maravillas',
-    items: [{ title: `Seña 50 % · ${r.noches} noches desde ${r.ingreso}`, quantity: 1, unit_price: monto, external_code: r.id }],
+    items: [{ title: `Seña 50 % · ${r.noches} noches desde ${r.ingreso}`, quantity: 1, unit_price: monto, external_code: `SENA-${r.id.slice(0, 8)}` }], // máx. 30 caracteres (límite real de la API)
     config: {
       online: {
         success_url: `${base}/?reserva=${r.id}&pago=aprobado`,
@@ -425,7 +426,11 @@ async function crearOrdenSena(req, env, cors) {
   if (!res.ok || !o.id || !o.checkout_url) {
     await env.DB.batch([
       env.DB.prepare("UPDATE reservas SET mp_order_id = NULL WHERE id = ? AND mp_order_id = 'creando'").bind(id),
-      evento(env, id, 'orden_error', { status: res.status, error: o.error || o.message || null })
+      evento(env, id, 'orden_error', {
+        status: res.status,
+        error: o.error || o.message || null,
+        errores: Array.isArray(o.errors) ? o.errors.slice(0, 5).map(x => ({ code: x.code, message: String(x.message || '').slice(0, 200), details: x.details })) : null
+      })
     ]);
     throw new ErrorUsuario('mp_error', 'No pudimos generar el pago en Mercado Pago. Probá de nuevo o escribinos por WhatsApp.', 502);
   }
@@ -672,6 +677,24 @@ async function conciliarOrdenes(env) {
     try { await conciliarOrden(env, r.mp_order_id); }
     catch (e) { console.error('Conciliación falló', r.id, e && e.message || e); }
   }
+}
+
+// Diagnóstico (solo con la clave de pruebas): qué tipo de cuenta es la del token. Nunca devuelve el token ni datos personales.
+async function diagnosticoCuenta(req, env, cors) {
+  if (!(await claveDePruebaValida(req, env))) return json({ error: 'no_encontrado' }, 404, cors);
+  if (!env.MP_ACCESS_TOKEN) return json({ token_cargado: false }, 200, cors);
+  const r = await mpFetch(env, '/users/me');
+  const d = r.data || {};
+  return json({
+    token_cargado: true,
+    respuesta_mp: r.status,
+    es_cuenta_de_prueba: Array.isArray(d.tags) && d.tags.includes('test_user'),
+    etiquetas: d.tags || null,
+    pais: d.site_id || null,
+    apodo_empieza_con_TEST: typeof d.nickname === 'string' ? /^TEST/i.test(d.nickname) : null,
+    tipo_usuario: d.user_type || null,
+    error_mp: r.ok ? null : (d.message || d.error || null)
+  }, 200, cors);
 }
 
 /* ---------- 5) Detalle para pruebas (solo con la clave de pruebas; sin datos personales) ---------- */
