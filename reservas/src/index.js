@@ -578,7 +578,12 @@ async function aplicarEstado(env, r, o, reintento = false) {
   const acreditada = o.status === 'processed' && (o.status_detail === 'accredited' || acreditados.length > 0);
   if (acreditada) return await registrarAcreditacion(env, r, o, acreditados, stmts);
 
-  if (o.status === 'processing' || (o.status === 'action_required' && pagos.length)) {
+  // Rechazo: la API real deja la orden en "action_required / waiting_retry" cuando el pago falló y espera un reintento.
+  // Si todos los pagos fallaron, es un RECHAZO (no un pago en proceso): no se extiende la retención.
+  const todosFallaron = pagos.length > 0 && pagos.every(p => p.status === 'failed');
+  const rechazada = o.status === 'failed' || (o.status === 'action_required' && todosFallaron);
+  const enProceso = !rechazada && (o.status === 'processing' || pagos.some(p => p.status === 'processing') || (o.status === 'action_required' && pagos.length > 0));
+  if (enProceso) {
     // Pago pendiente o en revisión: se retienen las fechas mientras Mercado Pago lo siga informando así,
     // renovando de a 30 min en cada consulta, con tope de 48 h desde la creación (después, revisión manual).
     const tope = Date.parse(r.creada) + 48 * 3600e3;
@@ -609,8 +614,12 @@ async function aplicarEstado(env, r, o, reintento = false) {
     if (!nueva.ok || !nueva.data) throw new Error(`Mercado Pago GET order tras cancelar HTTP ${nueva.status} (cancel ${c.status})`);
     return await aplicarEstado(env, r, nueva.data, true);
   }
-  if (o.status === 'failed' && r.estado !== 'pendiente_pago') stmts.push(env.DB.prepare("UPDATE reservas SET estado = 'pendiente_pago' WHERE id = ?").bind(r.id));
-  if (o.status === 'failed') stmts.push(evento(env, r.id, 'pago_rechazado', { detalle: o.status_detail }));
+  if (rechazada) {
+    // Vuelve a "pendiente de pago" con el vencimiento ORIGINAL de la orden (sin extensiones por un rechazo).
+    stmts.push(env.DB.prepare("UPDATE reservas SET estado = 'pendiente_pago' WHERE id = ? AND estado <> 'pendiente_pago'").bind(r.id));
+    const yaRegistrado = (await env.DB.prepare("SELECT COUNT(*) n FROM eventos WHERE reserva_id = ? AND tipo = 'pago_rechazado'").bind(r.id).first()).n > 0;
+    if (!yaRegistrado || r.estado !== 'pendiente_pago') stmts.push(evento(env, r.id, 'pago_rechazado', { orden: o.status, detalle: o.status_detail, pago: (pagos[pagos.length - 1] || {}).status_detail || null }));
+  }
   await env.DB.batch(stmts); return 'ok';
 }
 

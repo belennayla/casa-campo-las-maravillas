@@ -81,12 +81,21 @@ await Promise.all([webhook(ordenA), webhook(ordenA), webhook(ordenA)]);
 d = await detalle(resA); ok(d.pagos.length === 1 && d.estado === 'pago_verificado', '3 avisos repetidos: sigue habiendo un solo pago registrado');
 ok(d.noches_retenidas === d.noches, 'las noches siguen retenidas');
 
-console.log('\n4) Pago rechazado');
+console.log('\n4) Pago rechazado (como la API real: orden action_required / waiting_retry, pago failed)');
+b = await bloquear(nuevasFechas()); o = await orden(b.id);
+const venceAntes = (await detalle(b.id)).vence_en;
+await mpEstado(o.mp_order_id, { status: 'action_required', status_detail: 'waiting_retry', pago: { status: 'failed', status_detail: 'rejected_by_issuer', paid_amount: '0.00' } });
+await webhook(o.mp_order_id); d = await detalle(b.id);
+ok(d.estado === 'pendiente_pago' && d.noches_retenidas === d.noches && d.pagado === 0, 'rechazado: no se registra seña, las fechas siguen retenidas hasta el vencimiento (puede reintentar)');
+ok(d.vence_en === venceAntes, 'un rechazo NO extiende la retención (no se trata como pago en proceso)');
+ok(d.eventos.includes('pago_rechazado') && !d.eventos.includes('pago_en_proceso'), 'queda registrado como rechazo, no como pago en proceso');
+ok(!/procesando/i.test((await publico(b.id)).mensaje || ''), 'al huésped no se le dice que el pago se está procesando');
+await webhook(o.mp_order_id); d = await detalle(b.id);
+ok(d.eventos.filter(e => e === 'pago_rechazado').length === 1, 'aviso repetido del rechazo: un solo registro');
 b = await bloquear(nuevasFechas()); o = await orden(b.id);
 await mpEstado(o.mp_order_id, { status: 'failed', status_detail: 'rejected_by_issuer', pago: { status: 'failed', status_detail: 'rejected_by_issuer', paid_amount: '0.00' } });
 await webhook(o.mp_order_id); d = await detalle(b.id);
-ok(d.estado === 'pendiente_pago' && d.noches_retenidas === d.noches && d.pagado === 0, 'rechazado: no se registra seña, las fechas siguen retenidas hasta el vencimiento (puede reintentar)');
-ok(d.eventos.includes('pago_rechazado'), 'queda registrado el rechazo');
+ok(d.estado === 'pendiente_pago' && d.eventos.includes('pago_rechazado'), 'orden "failed": también se registra como rechazo');
 
 console.log('\n5) Pago pendiente (en revisión) y luego acreditado');
 b = await bloquear(nuevasFechas(), 20); o = await orden(b.id);
