@@ -817,9 +817,32 @@ async function crearSolicitud(req, env, ctx, cors) {
   }
   if (!numero) throw new Error('No se pudo generar un número de solicitud único');
   ctx.waitUntil(notificarSolicitud(env, id));
+  ctx.waitUntil(notificarHuesped(env, 'solicitud_recibida', { numero, telefono: c.telefono }));
   return json({ numero, estado: 'nueva', ...precio, ingreso: e.ingreso, salida: e.salida, noches: e.noches, huespedes: e.huespedes, mensaje: MENSAJE_SOLICITUD }, 201, cors);
 }
 const MENSAJE_SOLICITUD = 'Recibimos tu solicitud. Las fechas todavía no están reservadas: los dueños revisan la disponibilidad y te responden por WhatsApp.';
+
+/* ---------- Notificaciones ----------
+   Dos destinatarios, canales independientes:
+   - DUEÑOS (interno): Telegram. El panel privado sigue siendo la fuente principal de información.
+   - HUÉSPED (externo): preparado para WhatsApp oficial (Cloud API de Meta) en el futuro. Hoy APAGADO:
+     CANAL_HUESPED = "ninguno". Cuando se active ("whatsapp"), cada evento usará una plantilla aprobada por Meta
+     (WHATSAPP_PHONE_ID + secreto WHATSAPP_TOKEN). Eventos previstos:
+       solicitud_recibida · solicitud_aprobada (con link de pago) · solicitud_rechazada · pago_recibido ·
+       reserva_confirmada · info_estadia
+*/
+export const EVENTOS_HUESPED = ['solicitud_recibida', 'solicitud_aprobada', 'solicitud_rechazada', 'pago_recibido', 'reserva_confirmada', 'info_estadia'];
+async function notificarHuesped(env, evento, datos) {
+  if (!EVENTOS_HUESPED.includes(evento)) return { enviado: false, motivo: 'evento_desconocido' };
+  const canal = env.CANAL_HUESPED || 'ninguno';
+  if (canal === 'ninguno') return { enviado: false, motivo: 'canal_huesped_desactivado' };
+  if (canal === 'whatsapp') {
+    // Futuro: POST https://graph.facebook.com/<versión>/<WHATSAPP_PHONE_ID>/messages con una plantilla aprobada.
+    // No se implementa todavía (requiere número propio de la casa, plantillas aprobadas y aceptación del huésped).
+    return { enviado: false, motivo: 'whatsapp_no_implementado' };
+  }
+  return { enviado: false, motivo: 'canal_desconocido' };
+}
 
 /* ---------- Notificaciones a los dueños (Telegram) ---------- */
 
@@ -1045,6 +1068,8 @@ async function aprobarSolicitud(env, id, quien, body) {
     if (/UNIQUE|PRIMARY KEY|constraint/i.test(String(err && err.message || err))) throw new ErrorUsuario('no_disponible', 'Alguna de esas noches acaba de ser tomada por otra reserva.', 409);
     throw err;
   }
+  // Aviso al huésped (canal preparado, apagado). Con WhatsApp activo, acá iría también el link de pago.
+  await notificarHuesped(env, 'solicitud_aprobada', { numero: s.numero, telefono: s.telefono, retencion_vence: vence });
   // Paso siguiente (preparado, apagado): generar la orden de seña y enviarle el link al huésped.
   const pago = env.ENVIO_LINK_AUTOMATICO === 'true' && env.PAGOS_HABILITADOS === 'true'
     ? { estado: 'pendiente_de_implementar' }
@@ -1074,6 +1099,7 @@ async function rechazarSolicitud(env, id, quien, body) {
   }
   stmts.push(evento(env, s.reserva_id, 'solicitud_rechazada', { numero: s.numero, por: quien, motivo }));
   await env.DB.batch(stmts);
+  await notificarHuesped(env, 'solicitud_rechazada', { numero: s.numero, telefono: s.telefono });
   return { numero: s.numero, estado: 'rechazada' };
 }
 

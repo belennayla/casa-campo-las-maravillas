@@ -39,5 +39,7 @@ PAGOS_HABILITADOS = "false"
 BLOQUEOS_PUBLICOS = "false"
 # Etapa 1: solicitudes en línea APAGADAS hasta configurar Turnstile, Telegram y Access.
 SOLICITUDES_HABILITADAS = "false"
+# Avisos al huésped: preparado para WhatsApp oficial en el futuro. Hoy apagado.
+CANAL_HUESPED = "ninguno"
 MP_MODO = "prueba"
 CONFIRMACION_AUTOMATICA = "false"
