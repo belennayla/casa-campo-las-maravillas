@@ -1,0 +1,13 @@
+{
+  "name": "reservas-casacampo",
+  "private": true,
+  "description": "Servidor de reservas de Casa Campo Las Maravillas (Cloudflare Workers + D1)",
+  "scripts": {
+    "dev": "wrangler dev --local --test-scheduled --port 8787",
+    "db:local": "wrangler d1 migrations apply reservas --local",
+    "test": "node pruebas/pruebas.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
