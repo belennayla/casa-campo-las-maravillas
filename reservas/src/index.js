@@ -194,7 +194,21 @@ function validarContacto(body) {
   return { nombre, telefono, email: email || null, observaciones: obs || null };
 }
 
+// Mientras la web no esté conectada, crear bloqueos solo se permite con la clave de pruebas
+// (secreto CLAVE_PRUEBAS en Cloudflare). Sin ese secreto cargado, nadie puede crear bloqueos.
+async function claveDePruebaValida(req, env) {
+  const recibida = (req.headers.get('x-clave-pruebas') || '').trim();
+  const esperada = (env.CLAVE_PRUEBAS || '').trim();
+  if (esperada.length < 32 || recibida.length !== esperada.length) return false;
+  const enc = new TextEncoder();
+  return crypto.subtle.timingSafeEqual(enc.encode(recibida), enc.encode(esperada));
+}
+
 async function crearBloqueo(req, env, cors) {
+  const esPrueba = await claveDePruebaValida(req, env);
+  if (env.BLOQUEOS_PUBLICOS !== 'true' && !esPrueba) {
+    throw new ErrorUsuario('no_habilitado', 'Las reservas online todavía no están habilitadas. Escribinos por WhatsApp.', 403);
+  }
   const clave = (req.headers.get('idempotency-key') || '').trim();
   if (!/^[A-Za-z0-9-]{16,64}$/.test(clave)) throw new ErrorUsuario('idempotencia', 'Falta el encabezado Idempotency-Key (16 a 64 caracteres).');
 
@@ -211,7 +225,11 @@ async function crearBloqueo(req, env, cors) {
   if (!disp.disponible) throw new ErrorUsuario('no_disponible', 'Esas fechas ya no están disponibles. Elegí otras o escribinos por WhatsApp.', 409);
 
   const id = crypto.randomUUID(), t = ahora();
-  const vence = new Date(Date.now() + Number(env.BLOQUEO_MINUTOS || 30) * 60e3).toISOString();
+  // Solo en pruebas se puede acortar el vencimiento (5 a 600 segundos) para probar que se liberan las fechas.
+  const segPrueba = esPrueba ? Number.parseInt(body.vence_en_segundos, 10) : NaN;
+  const msVence = Number.isInteger(segPrueba) && segPrueba >= 5 && segPrueba <= 600 ? segPrueba * 1000 : Number(env.BLOQUEO_MINUTOS || 30) * 60e3;
+  const vence = new Date(Date.now() + msVence).toISOString();
+  const origen = esPrueba ? 'prueba' : 'web';
   const noches = listaNoches(e.ingreso, e.salida);
 
   // Todo en un único lote: es una transacción. Si UNA noche ya está tomada (clave primaria),
@@ -219,9 +237,9 @@ async function crearBloqueo(req, env, cors) {
   const stmts = [
     env.DB.prepare(`INSERT INTO reservas (id, creada, actualizada, estado, ingreso, salida, noches, adultos, menores, huespedes,
       precio_noche, total, sena, saldo, moneda, nombre, telefono, email, observaciones, vence_en, origen)
-      VALUES (?, ?, ?, 'bloqueo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'web')`)
+      VALUES (?, ?, ?, 'bloqueo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, t, t, e.ingreso, e.salida, e.noches, e.adultos, e.menores, e.huespedes,
-        precio.precio_noche, precio.total, precio.sena, precio.saldo, precio.moneda, c.nombre, c.telefono, c.email, c.observaciones, vence),
+        precio.precio_noche, precio.total, precio.sena, precio.saldo, precio.moneda, c.nombre, c.telefono, c.email, c.observaciones, vence, origen),
     ...noches.map(f => env.DB.prepare('INSERT INTO noches (fecha, reserva_id) VALUES (?, ?)').bind(f, id)),
     env.DB.prepare('INSERT INTO idempotencia (clave, reserva_id, creada) VALUES (?, ?, ?)').bind(clave, id, t),
     env.DB.prepare('INSERT INTO eventos (reserva_id, fecha, tipo, detalle) VALUES (?, ?, ?, ?)')

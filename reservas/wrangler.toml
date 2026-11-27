@@ -3,6 +3,8 @@
 name = "reservas-casacampo"
 main = "src/index.js"
 compatibility_date = "2026-11-01"
+workers_dev = true
+preview_urls = false
 
 # Vence los bloqueos temporales cada 5 minutos (en local se prueba con /__scheduled).
 [triggers]
@@ -21,5 +23,7 @@ ORIGENES_PERMITIDOS = "https://casacampolasmaravillas.github.io,http://localhost
 BLOQUEO_MINUTOS = "30"
 # Interruptores de seguridad: los pagos online y la confirmación automática quedan APAGADOS.
 PAGOS_HABILITADOS = "false"
+# Crear bloqueos está cerrado al público hasta conectar la web (solo con la clave de pruebas).
+BLOQUEOS_PUBLICOS = "false"
 MP_MODO = "prueba"
 CONFIRMACION_AUTOMATICA = "false"
