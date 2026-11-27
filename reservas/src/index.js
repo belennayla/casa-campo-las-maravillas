@@ -28,8 +28,9 @@ export default {
     try {
       if (url.pathname === '/api/salud' && req.method === 'GET') return json(estadoServicio(env), 200, cors);
       if (url.pathname === '/api/cotizar' && req.method === 'POST') {
-        await limitar(env.LIMITE_COTIZAR, req);
-        return json(await cotizar(await leerJson(req), env), 200, cors);
+        const esPrueba = await claveDePruebaValida(req, env);
+        if (!esPrueba) await limitar(env.LIMITE_COTIZAR, req);
+        return json(await cotizar(await leerJson(req), env, esPrueba), 200, cors);
       }
       if (url.pathname === '/api/bloqueos' && req.method === 'POST') {
         if (!(await claveDePruebaValida(req, env))) await limitar(env.LIMITE_BLOQUEOS, req);
@@ -167,13 +168,15 @@ function calcularPrecio(casa, e) {
   return { precio_noche: precio, total, sena, saldo: total - sena, moneda: casa.tarifas.moneda || 'ARS' };
 }
 
-async function revisarDisponibilidad(env, casa, e) {
+async function revisarDisponibilidad(env, casa, e, { incluirPruebas = true } = {}) {
   const noches = listaNoches(e.ingreso, e.salida);
   const motivos = [];
   // 1) Base de datos propia (bloqueos vigentes y reservas).
+  //    La cotización pública ignora las reservas de PRUEBA (origen = 'prueba') para no afectar a visitantes reales.
   await vencerBloqueos(env);
   const ph = noches.map(() => '?').join(',');
-  const { results } = await env.DB.prepare(`SELECT fecha FROM noches WHERE fecha IN (${ph})`).bind(...noches).all();
+  const { results } = await env.DB.prepare(`SELECT n.fecha FROM noches n JOIN reservas r ON r.id = n.reserva_id
+    WHERE n.fecha IN (${ph}) AND (? = 1 OR r.origen <> 'prueba')`).bind(...noches, incluirPruebas ? 1 : 0).all();
   const ocupadasDB = new Set(results.map(r => r.fecha));
   // 2) Reservas directas cargadas a mano + 3) copia de Booking/Airbnb publicada.
   const sync = await calendarioPublicado(env);
@@ -193,11 +196,11 @@ async function revisarDisponibilidad(env, casa, e) {
   return { disponible: choque.length === 0, noches_ocupadas: choque, garantizada: false, motivos };
 }
 
-async function cotizar(body, env) {
+async function cotizar(body, env, incluirPruebas = false) {
   const casa = await datosCasa(env);
   const e = validarEstadia(body, casa);
   const precio = calcularPrecio(casa, e);
-  const disp = await revisarDisponibilidad(env, casa, e);
+  const disp = await revisarDisponibilidad(env, casa, e, { incluirPruebas });
   return {
     ingreso: e.ingreso, salida: e.salida, noches: e.noches, huespedes: e.huespedes, ...precio,
     disponible: disp.disponible,

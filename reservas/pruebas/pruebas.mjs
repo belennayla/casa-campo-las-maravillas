@@ -10,6 +10,8 @@ const ok = (c, m) => { console.log((c ? '  OK  ' : '  MAL ') + m); if (!c) falla
 const uuid = () => crypto.randomUUID();
 const esperar = ms => new Promise(r => setTimeout(r, ms));
 const post = (ruta, body, headers = {}) => fetch(BASE + ruta, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) });
+// Cotizar como visitante (sin clave) o como prueba (ve también las reservas de prueba)
+const cotizarP = body => post('/api/cotizar', body, { 'x-clave-pruebas': CLAVE });
 const bloquear = (body, extra = {}) => post('/api/bloqueos', body, { 'idempotency-key': uuid(), 'x-clave-pruebas': CLAVE, ...extra });
 const fecha = dias => { const d = new Date(); d.setUTCDate(d.getUTCDate() + dias); return d.toISOString().slice(0, 10); };
 // Fechas aleatorias entre marzo y junio de 2027 (libres en Booking/Airbnb)
@@ -58,7 +60,8 @@ ok(g.estado === 'bloqueo' && !!g.vence_en && !('nombre' in g) && !('telefono' in
 
 console.log('6) Superposición y día de salida');
 s = await bloquear({ ingreso: D, salida: C, adultos: 2, ...contacto }); ok(s.status === 409, 'superposición parcial rechazada');
-r = await (await post('/api/cotizar', { ingreso: A, salida: B, adultos: 2 })).json(); ok(r.disponible === false, 'la cotización ve las fechas bloqueadas');
+r = await (await cotizarP({ ingreso: A, salida: B, adultos: 2 })).json(); ok(r.disponible === false, 'la cotización de prueba ve las fechas bloqueadas');
+r = await (await post('/api/cotizar', { ingreso: A, salida: B, adultos: 2 })).json(); ok(r.disponible === true, 'AISLAMIENTO: la cotización pública ignora las reservas de prueba');
 s = await bloquear({ ingreso: B, salida: C, adultos: 2, ...contacto }); ok(s.status === 201, 'ingreso el día de salida de otra reserva permitido'); creados.add((await s.json()).id);
 
 console.log('7) Idempotencia (misma solicitud 3 veces a la vez)');
@@ -71,7 +74,7 @@ console.log('8) Vencimiento de bloqueos');
 s = await bloquear({ ingreso: E, salida: F, adultos: 2, ...contacto, vence_en_segundos: 5 }); const corto = await s.json(); creados.add(corto.id);
 ok(s.status === 201, 'bloqueo de 5 segundos creado');
 await esperar(7000);
-r = await (await post('/api/cotizar', { ingreso: E, salida: F, adultos: 2 })).json(); ok(r.disponible === true, 'al vencer, las fechas vuelven a estar disponibles');
+r = await (await cotizarP({ ingreso: E, salida: F, adultos: 2 })).json(); ok(r.disponible === true, 'al vencer, las fechas vuelven a estar disponibles');
 r = await (await fetch(`${BASE}/api/reservas/${corto.id}`)).json(); ok(r.estado === 'vencida', `estado: ${r.estado}`);
 
 console.log('9) Seguridad');
@@ -80,7 +83,7 @@ s = await fetch(BASE + '/api/cotizar', { method: 'POST', headers: { 'content-typ
 s = await post('/api/cotizar', JSON.stringify({ x: 'a'.repeat(6000) })); ok(s.status === 400, 'cuerpo demasiado grande: 400');
 s = await bloquear({ ingreso: F, salida: fecha(base + 11), adultos: 2, ...contacto, nombre: "Robert'); DROP TABLE reservas;--" });
 const inj = await s.json(); creados.add(inj.id);
-r = await (await post('/api/cotizar', { ingreso: A, salida: B, adultos: 2 })).json();
+r = await (await cotizarP({ ingreso: A, salida: B, adultos: 2 })).json();
 ok(s.status === 201 && r.disponible === false, 'texto con inyección SQL se guarda como texto y la base sigue intacta');
 s = await fetch(`${BASE}/api/reservas/1%20OR%201=1`); ok(s.status === 404, 'id manipulado: 404');
 s = await fetch(`${BASE}/api/reservas/${g.id}`, { method: 'DELETE' }); ok(s.status === 404, 'métodos no previstos: 404');
