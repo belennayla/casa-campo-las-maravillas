@@ -11,8 +11,8 @@ crons = ["*/5 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "reservas"
-# Se completa cuando se cree la base en Cloudflare (paso siguiente, con tu autorización).
-database_id = "00000000-0000-0000-0000-000000000000"
+# Base creada en Cloudflare D1 (plan gratuito, región ENAM). El id no es secreto: sin tu cuenta no da acceso.
+database_id = "a7b866ef-233e-4ba0-b89f-d89bac8b626b"
 migrations_dir = "migrations"
 
 [vars]
