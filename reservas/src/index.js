@@ -478,16 +478,23 @@ export async function validarFirma(env, xSignature, xRequestId, dataId) {
     if (k === 'ts') ts = v; else if (k === 'v1') v1 = v;
   }
   if (!ts || !/^\d+$/.test(ts) || !v1) return { ok: false, motivo: 'firma_mal_formada' };
-  const partes = [];
-  if (dataId) partes.push(`id:${dataId}`);
-  if (xRequestId) partes.push(`request-id:${xRequestId}`);
-  partes.push(`ts:${ts}`);
-  const esperado = await hmacHex(secreto, partes.join(';') + ';');
-  if (!igualesTiempoConstante(esperado, v1.toLowerCase())) return { ok: false, motivo: 'firma_no_coincide' };
+  // Mercado Pago indica que, si el data.id es alfanumérico (como los ids de order "ORD..."), se firma en minúsculas.
+  // Se aceptan las dos variantes documentadas; todo lo demás (secreto, request-id, ts) debe coincidir exactamente.
+  const variantes = [...new Set([dataId, (dataId || '').toLowerCase()])];
+  let coincidio = null;
+  for (const id of variantes) {
+    const partes = [];
+    if (id) partes.push(`id:${id}`);
+    if (xRequestId) partes.push(`request-id:${xRequestId}`);
+    partes.push(`ts:${ts}`);
+    const esperado = await hmacHex(secreto, partes.join(';') + ';');
+    if (igualesTiempoConstante(esperado, v1.toLowerCase())) { coincidio = id === dataId ? 'data_id_original' : 'data_id_minusculas'; break; }
+  }
+  if (!coincidio) return { ok: false, motivo: 'firma_no_coincide', detalle: { ts_segundos: ts.length <= 10, con_request_id: !!xRequestId, largo_v1: v1.length } };
   // Ventana amplia (24 h por defecto): un aviso reenviado no puede cambiar nada, porque siempre se consulta el estado real.
   const tol = Number(env.MP_FIRMA_TOLERANCIA_SEG || 86400);
   if (Math.abs(Date.now() / 1000 - Number(ts)) > tol) return { ok: false, motivo: 'firma_vencida' };
-  return { ok: true };
+  return { ok: true, variante: coincidio };
 }
 
 async function recibirWebhook(req, env, ctx) {
@@ -500,9 +507,10 @@ async function recibirWebhook(req, env, ctx) {
   const requestId = req.headers.get('x-request-id') || '';
   const firma = await validarFirma(env, req.headers.get('x-signature'), requestId, dataId);
   if (!firma.ok) {
-    console.warn('Webhook de Mercado Pago rechazado', firma.motivo, requestId);
+    console.warn('Webhook de Mercado Pago rechazado', firma.motivo, requestId, JSON.stringify(firma.detalle || {}));
     return json({ error: 'firma_invalida' }, 401, {});
   }
+  console.log('Webhook de Mercado Pago con firma válida', firma.variante, requestId, tipo);
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(dataId)) return json({ error: 'id_invalido' }, 400, {});
   const fila = await env.DB.prepare('INSERT INTO avisos_mp (recibido, tipo, accion, data_id, request_id) VALUES (?, ?, ?, ?, ?) RETURNING id')
     .bind(ahora(), tipo, body.action || null, dataId, requestId).first();
