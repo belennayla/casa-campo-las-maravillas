@@ -92,6 +92,13 @@ s = await fetch(BASE + '/api/salud', { headers: { origin: 'https://casacampolasm
 if (REMOTO) { s = await fetch(BASE + '/__scheduled'); ok(s.status === 404, 'la ruta de pruebas /__scheduled no existe en el servidor publicado'); }
 s = await fetch(BASE + '/api/salud'); const txt = await s.text(); ok(!/CLAVE|token|secret/i.test(txt), 'la respuesta pública no expone secretos');
 
+console.log('9b) Funciones nuevas apagadas en el Worker público');
+s = await post('/api/solicitudes', { ingreso: A, salida: B, adultos: 2, ...contacto, turnstile: 'x' }); ok(s.status === 403, 'solicitudes en línea apagadas para el público (SOLICITUDES_HABILITADAS = false)');
+s = await fetch(BASE + '/admin'); ok(s.status === 404, 'el Worker público no tiene panel (/admin: 404)');
+s = await fetch(BASE + '/api/admin/solicitudes'); ok(s.status === 404, 'ni API de administración (404)');
+s = await post('/api/pagos/orden', { reserva_id: '00000000-0000-4000-8000-000000000000' }); ok(s.status === 403 || s.status === 429, 'crear órdenes de pago sin clave: cerrado');
+s = await fetch(BASE + '/calendario-booking.ics'); ok(s.status === 200 && (await s.text()).startsWith('BEGIN:VCALENDAR'), 'calendario exportado disponible (solo fechas)');
+
 console.log('10) Límite de consultas por persona (va al final: deja la IP limitada un minuto)');
 const rafaga = await Promise.all(Array.from({ length: 35 }, () => post('/api/cotizar', { ingreso: A, salida: B, adultos: 2 })));
 const n429 = rafaga.filter(x => x.status === 429).length;

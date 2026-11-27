@@ -7,6 +7,7 @@ const ordenes = new Map();     // id -> orden
 const porClave = new Map();    // idempotency key -> { id, cuerpo }
 let creadas = 0, cuentaPrueba = true, fallarGet = 0;
 const telegram = []; let telegramFalla = 0;
+const ical = { booking: [], airbnb: [], fallar: [] }; let jwks = { keys: [] };
 
 const responder = (res, status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(data === undefined ? '' : JSON.stringify(data)); };
 const leer = req => new Promise(ok => { let b = ''; req.on('data', c => b += c); req.on('end', () => ok(b)); });
@@ -40,6 +41,18 @@ http.createServer(async (req, res) => {
   // --- Telegram simulado ---
   if (/^\/bot[^/]+\/sendMessage$/.test(url.pathname) && req.method === 'POST') { telegram.push(JSON.parse(cuerpo)); return responder(res, telegramFalla-- > 0 ? 500 : 200, { ok: true }); }
   if (url.pathname === '/__control/telegram') { if (req.method === 'POST') { const c = JSON.parse(cuerpo || '{}'); telegramFalla = c.fallar || 0; } return responder(res, 200, { mensajes: telegram }); }
+
+  // --- Calendarios iCal simulados de Booking y Airbnb (para la consulta en vivo del panel) ---
+  if (url.pathname === '/__control/ical' && req.method === 'POST') { Object.assign(ical, JSON.parse(cuerpo)); return responder(res, 200, ical); }
+  const mi = url.pathname.match(/^\/ical\/(booking|airbnb)\.ics$/);
+  if (mi) {
+    if ((ical.fallar || []).includes(mi[1])) { res.writeHead(503); return res.end('error'); }
+    const ev = (ical[mi[1]] || []).map((b, i) => `BEGIN:VEVENT\r\nUID:${mi[1]}${i}\r\nDTSTART;VALUE=DATE:${b.desde.replace(/-/g, '')}\r\nDTEND;VALUE=DATE:${b.hasta.replace(/-/g, '')}\r\nSUMMARY:Reserved\r\nEND:VEVENT\r\n`).join('');
+    res.writeHead(200, { 'content-type': 'text/calendar' }); return res.end(`BEGIN:VCALENDAR\r\nVERSION:2.0\r\n${ev}END:VCALENDAR\r\n`);
+  }
+  // --- Claves públicas de Cloudflare Access simuladas (JWKS) ---
+  if (url.pathname === '/__control/jwks' && req.method === 'POST') { jwks = JSON.parse(cuerpo); return responder(res, 200, { ok: true }); }
+  if (url.pathname === '/certs') return responder(res, 200, jwks);
 
   // --- API simulada ---
   const auth = req.headers.authorization || '';

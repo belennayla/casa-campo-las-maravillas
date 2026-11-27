@@ -1,0 +1,26 @@
+# Panel privado · Casa Campo Las Maravillas
+# Worker separado del público. Se protege ENTERO con Cloudflare Access ("All traffic").
+# Mientras ACCESS_TEAM_DOMAIN y ACCESS_AUD estén vacíos, responde 403 a todo (panel cerrado).
+name = "panel-casacampo"
+main = "src/panel.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+preview_urls = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "reservas"
+database_id = "a7b866ef-233e-4ba0-b89f-d89bac8b626b"
+migrations_dir = "migrations"
+
+[vars]
+SITE_URL = "https://casacampolasmaravillas.github.io"
+# Se completan al configurar Cloudflare Access (no son secretos):
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""
+RETENCION_HORAS = "24"
+PAGOS_HABILITADOS = "false"
+ENVIO_LINK_AUTOMATICO = "false"
+MP_MODO = "prueba"
+# Secretos de este Worker (se cargan con: npx.cmd wrangler secret put NOMBRE -c wrangler.panel.toml):
+#   ICAL_URLS, AIRBNB_ICAL_URL  → consulta EN VIVO a Booking y Airbnb al aprobar

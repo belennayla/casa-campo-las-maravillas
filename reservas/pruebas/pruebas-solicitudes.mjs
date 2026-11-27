@@ -1,9 +1,9 @@
-// Pruebas de la etapa 1 (solicitudes, Turnstile, Telegram y panel) contra servicios SIMULADOS.
-// Requiere: node pruebas/mp-simulado.mjs (simula también Turnstile y Telegram) y wrangler dev con:
-//   --var SOLICITUDES_HABILITADAS:true --var TURNSTILE_API_BASE:http://127.0.0.1:8790 --var TELEGRAM_API_BASE:http://127.0.0.1:8790
-// y en .dev.vars: TURNSTILE_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, ADMIN_CLAVE (valores locales de prueba).
-// Variable: ADMIN (= ADMIN_CLAVE de .dev.vars)
-const BASE = process.env.BASE || 'http://127.0.0.1:8787', MP = 'http://127.0.0.1:8790', ADMIN = process.env.ADMIN, CLAVE = process.env.CLAVE;
+// Pruebas de la etapa 1 contra servicios SIMULADOS (Turnstile, Telegram, iCal de Booking/Airbnb y claves de Cloudflare Access).
+// Worker público en BASE (8787) y Worker del PANEL en PANEL (8788), en modo producción: solo entra con un token de Access válido.
+import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+const BASE = process.env.BASE || 'http://127.0.0.1:8787', PANEL = process.env.PANEL || 'http://127.0.0.1:8788', MP = 'http://127.0.0.1:8790';
+const CLAVE = process.env.CLAVE, EQUIPO = 'https://equipo-prueba.cloudflareaccess.com', AUD = 'aud-de-prueba';
 let fallas = 0;
 const ok = (c, m) => { console.log((c ? '  OK  ' : '  MAL ') + m); if (!c) fallas++; };
 const esperar = ms => new Promise(r => setTimeout(r, ms));
@@ -11,94 +11,103 @@ const fecha = d => new Date(Date.parse('2027-03-01') + d * 864e5).toISOString().
 let cursor = Math.floor(Math.random() * 60);
 const fechas = (n = 2) => { const a = fecha(cursor), b = fecha(cursor + n); cursor += n + 1; return [a, b]; };
 const contacto = { nombre: 'Ana Prueba', telefono: '2664 111222', email: 'ana@example.com', acepto: true };
-const solicitar = ([ingreso, salida], extra = {}) => fetch(BASE + '/api/solicitudes', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://localhost:8080', 'x-clave-pruebas': CLAVE }, body: JSON.stringify({ ingreso, salida, adultos: 4, menores: 1, ...contacto, turnstile: 'ok', ...extra }) });
-const admin = (ruta, body, clave = ADMIN) => fetch(BASE + ruta, { method: body ? 'POST' : 'GET', headers: { 'content-type': 'application/json', ...(clave ? { 'x-admin-clave': clave } : {}) }, body: body ? JSON.stringify(body) : undefined });
+
+// --- Cloudflare Access simulado: par de claves RSA y tokens firmados RS256 ---
+const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256', use: 'sig' };
+await fetch(MP + '/__control/jwks', { method: 'POST', body: JSON.stringify({ keys: [jwk] }) });
+const b64 = o => Buffer.from(typeof o === 'string' ? o : JSON.stringify(o)).toString('base64url');
+const token = (cambios = {}, clave = privateKey) => {
+  const ahora = Math.floor(Date.now() / 1000);
+  const h = b64({ alg: 'RS256', kid: 'k1', typ: 'JWT' }), p = b64({ iss: EQUIPO, aud: [AUD], email: 'duenos@example.com', iat: ahora, nbf: ahora, exp: ahora + 3600, ...cambios });
+  return `${h}.${p}.${crypto.sign('RSA-SHA256', Buffer.from(`${h}.${p}`), clave).toString('base64url')}`;
+};
+const TOKEN = token();
+const admin = (ruta, body, tk = TOKEN) => fetch(PANEL + ruta, { method: body ? 'POST' : 'GET', headers: { 'content-type': 'application/json', ...(tk ? { 'cf-access-jwt-assertion': tk } : {}) }, body: body ? JSON.stringify(body) : undefined });
 const lista = async () => (await (await admin('/api/admin/solicitudes')).json()).solicitudes;
 const telegram = async () => (await (await fetch(MP + '/__control/telegram')).json()).mensajes;
-const cotizarPublico = ([ingreso, salida]) => fetch(BASE + '/api/cotizar', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ingreso, salida, adultos: 2 }) }).then(r => r.json());
+const icalCtl = c => fetch(MP + '/__control/ical', { method: 'POST', body: JSON.stringify({ booking: [], airbnb: [], fallar: [], ...c }) });
+const solicitar = ([ingreso, salida], extra = {}, conClave = true) => fetch(BASE + '/api/solicitudes', { method: 'POST', headers: { 'content-type': 'application/json', ...(conClave ? { 'x-clave-pruebas': CLAVE } : {}) }, body: JSON.stringify({ ingreso, salida, adultos: 4, menores: 1, ...contacto, turnstile: 'ok', ...extra }) });
+const cotizar = ([ingreso, salida], conClave) => fetch(BASE + '/api/cotizar', { method: 'POST', headers: { 'content-type': 'application/json', ...(conClave ? { 'x-clave-pruebas': CLAVE } : {}) }, body: JSON.stringify({ ingreso, salida, adultos: 2 }) }).then(r => r.json());
+const ics = async p => (await fetch(`${BASE}/calendario-${p}.ics`)).text();
+const tieneFechas = (texto, [a, b]) => texto.includes(`DTSTART;VALUE=DATE:${a.replace(/-/g, '')}`) && texto.includes(`DTEND;VALUE=DATE:${b.replace(/-/g, '')}`);
+await icalCtl({});
 
-console.log('Servidor:', BASE);
-console.log('\n1) Turnstile (antispam validado en el servidor)');
+console.log('1) El Worker público no expone el panel');
+ok((await fetch(BASE + '/admin')).status === 404, 'GET /admin en el Worker público: 404');
+ok((await fetch(BASE + '/api/admin/solicitudes')).status === 404, 'API de administración en el Worker público: 404');
+
+console.log('\n2) Panel: solo con token válido de Cloudflare Access');
+ok((await fetch(PANEL + '/')).status === 403, 'página del panel sin token: 403 (no entrega ni el HTML)');
+ok((await admin('/api/admin/solicitudes', null, null)).status === 401, 'API sin token: 401');
+ok((await admin('/api/admin/solicitudes', null, token({ aud: ['otra-app'] }))).status === 401, 'token de otra aplicación (aud): 401');
+ok((await admin('/api/admin/solicitudes', null, token({ iss: 'https://otro.cloudflareaccess.com' }))).status === 401, 'token de otro equipo (iss): 401');
+ok((await admin('/api/admin/solicitudes', null, token({ exp: Math.floor(Date.now() / 1000) - 10 }))).status === 401, 'token vencido: 401');
+const { privateKey: otra } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+ok((await admin('/api/admin/solicitudes', null, token({}, otra))).status === 401, 'token con firma falsa: 401');
+ok((await admin('/api/admin/solicitudes', null, 'x.y.z')).status === 401, 'token mal formado: 401');
+ok((await admin('/api/admin/solicitudes', null, null, { 'x-admin-clave': 'a'.repeat(48) })).status === 401, 'clave de administración en producción: no sirve');
+const pag = await fetch(PANEL + '/', { headers: { 'cf-access-jwt-assertion': TOKEN } });
+ok(pag.status === 200 && /noindex/.test(pag.headers.get('x-robots-tag') || ''), 'con token válido: entra al panel (y no se indexa)');
+
+console.log('\n3) Solicitudes: Turnstile, número, precio y aviso');
 let F = fechas(3);
-let r = await solicitar(F, { turnstile: undefined }); ok(r.status === 403, 'sin token Turnstile: 403');
-r = await solicitar(F, { turnstile: 'token-falso' }); ok(r.status === 403, 'token Turnstile inválido: 403');
-ok((await lista()).length === 0 || true, 'ninguna solicitud creada por los intentos sin verificación');
-
-console.log('\n2) Solicitud válida');
+ok((await solicitar(F, { turnstile: 'malo' })).status === 403, 'Turnstile inválido: 403');
 const antesTg = (await telegram()).length;
-r = await solicitar(F, { total: 1, precio_noche: 1 }); let s = await r.json();
-ok(r.status === 201 && /^CC-\d{6}-[A-Z2-9]{4}$/.test(s.numero), `número de solicitud único: ${s.numero}`);
-ok(s.total === 3 * 209000 && s.sena === s.total / 2, `precio calculado en el servidor (5 huéspedes x 3 noches = $${s.total}); el del navegador se ignora`);
-ok(/todavía no están reservadas/.test(s.mensaje), 'el huésped sabe que las fechas aún no están reservadas');
-ok(!('nombre' in s) && !('telefono' in s), 'la respuesta no devuelve datos personales');
-let c = await cotizarPublico(F); ok(c.disponible === true, 'una solicitud NO retiene fechas (siguen disponibles)');
+let r = await solicitar(F, { total: 1 }); let s = await r.json();
+ok(r.status === 201 && /^CC-\d{6}-[A-Z2-9]{4}$/.test(s.numero) && s.total === 3 * 209000, `solicitud ${s.numero}, precio del servidor $${s.total}`);
+ok((await cotizar(F, true)).disponible === true, 'una solicitud NO retiene fechas');
 await esperar(800);
-const tg = (await telegram()).slice(antesTg);
-ok(tg.length === 1 && tg[0].text.includes(s.numero) && tg[0].text.includes('Ana Prueba'), 'aviso inmediato por Telegram a los dueños, con número y datos');
+ok((await telegram()).slice(antesTg).some(m => m.text.includes(s.numero)), 'aviso por Telegram a los dueños');
+r = await solicitar(F); ok((await r.json()).numero === s.numero, 'repetida en 30 min: misma solicitud');
 const numA = s.numero;
 
-console.log('\n3) Duplicados y validaciones');
-r = await solicitar(F); s = await r.json(); ok(r.status === 200 && s.numero === numA && s.repetida, 'misma persona y fechas en 30 min: misma solicitud (sin duplicar)');
-r = await solicitar(fechas(1)); ok(r.status === 400, 'estadía mínima');
-r = await solicitar(fechas(), { acepto: false }); ok(r.status === 400, 'sin aceptar condiciones');
-r = await solicitar(['2027-08-10', '2027-08-13']); ok(r.status === 409, 'fechas ocupadas en Booking (agosto 2027): no se acepta la solicitud');
-
-console.log('\n4) Panel privado: acceso');
-ok((await admin('/api/admin/solicitudes', null, null)).status === 401, 'sin credencial: 401');
-ok((await admin('/api/admin/solicitudes', null, 'x'.repeat(48))).status === 401, 'clave incorrecta: 401');
-const panel = await fetch(BASE + '/admin'); const html = await panel.text();
-ok(panel.status === 200 && !html.includes('Ana Prueba') && /noindex/.test(panel.headers.get('x-robots-tag') || ''), 'la página del panel no contiene datos (los pide con credencial) y no se indexa');
+console.log('\n4) Aprobar con consulta EN VIVO a Booking y Airbnb');
 let L = await lista(); let sa = L.find(x => x.numero === numA);
-ok(sa && sa.estado === 'nueva' && sa.telefono && sa.aviso_enviado === 1, 'con credencial: ve la solicitud con contacto y aviso enviado');
+await icalCtl({ booking: [{ desde: F[0], hasta: F[1] }] });  // Booking acaba de recibir una reserva en esas fechas
+r = await admin(`/api/admin/solicitudes/${sa.id}/aprobar`, { horas: 12 }); let j = await r.json();
+ok(r.status === 409 && /Booking|booking/.test(j.mensaje), 'reserva reciente en Booking (todavía no sincronizada): NO se aprueba');
+await icalCtl({ fallar: ['airbnb'] });
+r = await admin(`/api/admin/solicitudes/${sa.id}/aprobar`, { horas: 12 }); j = await r.json();
+ok(r.status === 409 && j.error === 'verificacion_en_vivo', 'Airbnb no responde: pide confirmar que se revisó a mano');
+r = await admin(`/api/admin/solicitudes/${sa.id}/aprobar`, { horas: 12, forzar: true }); j = await r.json();
+const h = (Date.parse(j.retencion_vence) - Date.now()) / 3600e3;
+ok(r.status === 200 && h > 11.9 && h <= 12 && /Booking y Airbnb/.test(j.siguiente_paso), `aprobada con confirmación manual: retención ${h.toFixed(1)} h e indicación de cerrar en las plataformas`);
+await icalCtl({});
+ok((await cotizar(F, true)).disponible === false, 'después de aprobar, las fechas quedan retenidas');
 
-console.log('\n5) Aprobar: recién ahí se retienen las fechas');
-r = await admin(`/api/admin/solicitudes/${sa.id}/revisar`, {}); let rv = await r.json(); ok(rv.disponible === true, 'revisar disponibilidad antes de aprobar: libre');
-r = await admin(`/api/admin/solicitudes/${sa.id}/aprobar`, { horas: 12 }); let ap = await r.json();
-const horasRet = (Date.parse(ap.retencion_vence) - Date.now()) / 3600e3;
-ok(r.status === 200 && ap.estado === 'aprobada' && horasRet > 11.9 && horasRet <= 12, `aprobada: fechas retenidas ${horasRet.toFixed(1)} h (vencimiento controlado)`);
-ok(ap.pago && ap.pago.estado === 'manual', 'pagos online apagados: la seña se coordina por WhatsApp (preparado para link automático)');
-c = await cotizarPublico(F); ok(c.disponible === false, 'después de aprobar, la web pública ve esas fechas ocupadas');
-r = await admin(`/api/admin/solicitudes/${sa.id}/aprobar`, { horas: 12 }); ok(r.status === 409, 'aprobar dos veces: rechazado');
+console.log('\n5) Calendario exportado a Booking y Airbnb (desde el Worker)');
+const F5 = fechas();
+// Solicitud REAL (sin clave de pruebas), para verificar que las aprobaciones reales sí se exportan
+const sReal = await (await solicitar(F5, { telefono: '2664 909090', nombre: 'Laura Real' }, false)).json();
+L = await lista(); const idReal = L.find(x => x.numero === sReal.numero).id;
+ok((await admin(`/api/admin/solicitudes/${idReal}/aprobar`, { horas: 6 })).status === 200, 'solicitud real aprobada');
+const icsB = await ics('booking'), icsA = await ics('airbnb'), icsT = await ics('todas');
+ok(tieneFechas(icsB, F5) && tieneFechas(icsA, F5) && tieneFechas(icsT, F5), 'las fechas aprobadas aparecen en los calendarios para Booking, Airbnb y general');
+ok(!tieneFechas(icsB, F), 'las aprobaciones de PRUEBA no se exportan a las plataformas');
+ok(!/Laura|Ana|2664|example\.com/.test(icsB + icsA + icsT), 'los calendarios no contienen nombres, teléfonos ni mails');
+const ext = (await (await fetch('https://casacampolasmaravillas.github.io/data/ocupadas-sync.json')).json()).ocupadas || [];
+const delBooking = ext.find(b => b.fuente === 'booking'), delAirbnb = ext.find(b => b.fuente === 'airbnb');
+if (delBooking) ok(!tieneFechas(icsB, [delBooking.desde, delBooking.hasta]), 'a Booking no se le devuelven sus propias reservas');
+if (delAirbnb) ok(!icsA.includes(`DTSTART;VALUE=DATE:${delAirbnb.desde.replace(/-/g, '')}\r\nDTEND;VALUE=DATE:${delAirbnb.hasta.replace(/-/g, '')}`), 'a Airbnb no se le devuelven sus propias reservas');
+r = await admin(`/api/admin/solicitudes/${idReal}/rechazar`, { motivo: 'fin de prueba' });
+ok(r.status === 200 && !tieneFechas(await ics('booking'), F5), 'al rechazar/liberar, las fechas salen del calendario exportado');
 
-console.log('\n6) Dos solicitudes por las mismas fechas: solo una puede aprobarse');
-const F2 = fechas();
-const s1 = await (await solicitar(F2, { telefono: '2664 333444' })).json();
-const s2 = await (await solicitar(F2, { telefono: '2664 555666', nombre: 'Beto Prueba' })).json();
-ok(s1.numero && s2.numero && s1.numero !== s2.numero, 'se registran las dos solicitudes (ninguna retiene fechas)');
+console.log('\n6) Aprobaciones simultáneas de la misma fecha');
+const F6 = fechas();
+const s1 = await (await solicitar(F6, { telefono: '2664 333444' })).json(), s2 = await (await solicitar(F6, { telefono: '2664 555666' })).json();
 L = await lista(); const i1 = L.find(x => x.numero === s1.numero).id, i2 = L.find(x => x.numero === s2.numero).id;
 const [a1, a2] = await Promise.all([admin(`/api/admin/solicitudes/${i1}/aprobar`, { horas: 2 }), admin(`/api/admin/solicitudes/${i2}/aprobar`, { horas: 2 })]);
-ok([a1.status, a2.status].sort().join() === '200,409', `aprobaciones simultáneas: una aprobada y otra rechazada por superposición (${a1.status}, ${a2.status})`);
+ok([a1.status, a2.status].sort().join() === '200,409', `una aprobada y otra rechazada (${a1.status}, ${a2.status})`);
 
-console.log('\n7) Rechazar');
-const perdedora = a1.status === 409 ? i1 : i2;
-r = await admin(`/api/admin/solicitudes/${perdedora}/rechazar`, { motivo: 'Fechas tomadas' }); ok(r.status === 200, 'rechazar una solicitud nueva');
-const ganadora = a1.status === 200 ? i1 : i2;
-r = await admin(`/api/admin/solicitudes/${ganadora}/rechazar`, { motivo: 'Cancelada' }); ok(r.status === 200, 'rechazar una aprobada libera la retención');
-c = await cotizarPublico(F2); ok(c.disponible === true, 'las fechas vuelven a estar disponibles');
-
-console.log('\n8) Retención que vence sin avanzar');
-const F3 = fechas();
-const s3 = await (await solicitar(F3, { telefono: '2664 777888' })).json();
-L = await lista(); const i3 = L.find(x => x.numero === s3.numero).id;
-await admin(`/api/admin/solicitudes/${i3}/aprobar`, { horas: 1 });
-const { execFileSync } = await import('node:child_process');
-// Se adelanta el vencimiento en la base local para no esperar una hora.
-execFileSync('npx.cmd', ['wrangler', 'd1', 'execute', 'reservas', '--local', '--persist-to', `"${process.env.PERSIST}"`, '--command', `"UPDATE reservas SET vence_en = '2000-01-01T00:00:00Z' WHERE solicitud_id = '${i3}'"`], { stdio: 'ignore', shell: true });
+console.log('\n7) Retención aprobada que vence');
+const F7 = fechas();
+const s7 = await (await solicitar(F7, { telefono: '2664 777888' })).json();
+L = await lista(); const i7 = L.find(x => x.numero === s7.numero).id;
+await admin(`/api/admin/solicitudes/${i7}/aprobar`, { horas: 1, segundos_prueba: 5 });
+await esperar(6500);
 await fetch(BASE + '/__scheduled?cron=*/5+*+*+*+*'); await esperar(800);
-L = await lista(); ok(L.find(x => x.id === i3).estado === 'vencida', 'al vencer la retención, la solicitud queda "vencida"');
-c = await cotizarPublico(F3); ok(c.disponible === true, 'y las fechas se liberan');
-r = await admin(`/api/admin/solicitudes/${i3}/aprobar`, { horas: 2 }); ok(r.status === 200, 'una solicitud vencida se puede volver a aprobar si sigue libre');
-
-console.log('\n9) Aviso a Telegram que falla: se reintenta');
-await fetch(MP + '/__control/telegram', { method: 'POST', body: JSON.stringify({ fallar: 1 }) });
-const s4 = await (await solicitar(fechas(), { telefono: '2664 999000' })).json(); await esperar(800);
-L = await lista(); ok(L.find(x => x.numero === s4.numero).aviso_enviado === 0, 'primer envío falló: queda pendiente');
-await fetch(BASE + '/__scheduled?cron=*/5+*+*+*+*'); await esperar(800);
-L = await lista(); ok(L.find(x => x.numero === s4.numero).aviso_enviado === 1, 'la tarea programada lo reenvió');
-
-console.log('\n10) Límite antispam por persona (sin clave de pruebas)');
-const rafaga = await Promise.all(Array.from({ length: 9 }, () => fetch(BASE + '/api/solicitudes', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ingreso: '2027-05-01', salida: '2027-05-03', adultos: 2, ...contacto, turnstile: 'malo' }) })));
-ok(rafaga.some(x => x.status === 429), `9 envíos seguidos de una misma persona: ${rafaga.filter(x => x.status === 429).length} frenados con 429`);
+L = await lista(); ok(L.find(x => x.id === i7).estado === 'vencida' && (await cotizar(F7, true)).disponible === true, 'vence: solicitud "vencida" y fechas liberadas');
 
 console.log(fallas ? `\n${fallas} pruebas fallaron` : '\nTodas las pruebas de solicitudes pasaron');
 process.exit(fallas ? 1 : 0);

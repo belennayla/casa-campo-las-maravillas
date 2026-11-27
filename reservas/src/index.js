@@ -47,8 +47,9 @@ export default {
         if (!(await claveDePruebaValida(req, env))) await limitar(env.LIMITE_BLOQUEOS, req); // 5 por minuto por persona
         return await crearSolicitud(req, env, ctx, cors);
       }
-      if (url.pathname === '/admin' && req.method === 'GET') return await panelAdmin(req, env);
-      if (url.pathname.startsWith('/api/admin/')) return await apiAdmin(req, env, ctx, url);
+      // El panel NO vive en este Worker público: está en el Worker "panel-casacampo", protegido entero por Cloudflare Access.
+      const cal = url.pathname.match(/^\/calendario-(booking|airbnb|vrbo|todas)\.ics$/);
+      if (cal && req.method === 'GET') return await calendarioExportado(env, cal[1]);
       if (url.pathname === '/api/pruebas/mp-cuenta' && req.method === 'GET') return await diagnosticoCuenta(req, env, cors);
       const mp = url.pathname.match(/^\/api\/pruebas\/reservas\/([0-9a-f-]{36})$/);
       if (mp && req.method === 'GET') return await detallePrueba(mp[1], req, env, cors);
@@ -777,7 +778,9 @@ async function verificarTurnstile(env, token, ip) {
 }
 
 async function crearSolicitud(req, env, ctx, cors) {
-  if (env.SOLICITUDES_HABILITADAS !== 'true') throw new ErrorUsuario('no_habilitado', 'Por ahora las solicitudes se reciben por WhatsApp.', 403);
+  const esPrueba = await claveDePruebaValida(req, env);
+  // Cerrado al público mientras SOLICITUDES_HABILITADAS no sea "true" (la clave de pruebas permite probarlo).
+  if (env.SOLICITUDES_HABILITADAS !== 'true' && !esPrueba) throw new ErrorUsuario('no_habilitado', 'Por ahora las solicitudes se reciben por WhatsApp.', 403);
   const body = await leerJson(req);
   const ts = await verificarTurnstile(env, body.turnstile, req.headers.get('cf-connecting-ip'));
   if (!ts.ok) throw new ErrorUsuario('verificacion_fallida', 'No pudimos verificar que no seas un robot. Probá de nuevo o escribinos por WhatsApp.', 403);
@@ -801,10 +804,10 @@ async function crearSolicitud(req, env, ctx, cors) {
     try {
       await env.DB.batch([
         env.DB.prepare(`INSERT INTO solicitudes (id, numero, creada, actualizada, estado, ingreso, salida, noches, adultos, menores, huespedes,
-          precio_noche, total, sena, saldo, nombre, telefono, email, observaciones, disponible_al_solicitar)
-          VALUES (?, ?, ?, ?, 'nueva', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
+          precio_noche, total, sena, saldo, nombre, telefono, email, observaciones, disponible_al_solicitar, origen)
+          VALUES (?, ?, ?, ?, 'nueva', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`)
           .bind(id, n, t, t, e.ingreso, e.salida, e.noches, e.adultos, e.menores, e.huespedes, precio.precio_noche, precio.total, precio.sena, precio.saldo,
-            c.nombre, c.telefono, c.email, c.observaciones),
+            c.nombre, c.telefono, c.email, c.observaciones, esPrueba ? 'prueba' : 'web'),
         env.DB.prepare('INSERT INTO eventos (reserva_id, fecha, tipo, detalle) VALUES (?, ?, ?, ?)').bind(null, t, 'solicitud_creada', JSON.stringify({ numero: n }))
       ]);
       numero = n;
@@ -863,22 +866,26 @@ async function reintentarNotificaciones(env) {
 
 /* ---------- Acceso al panel privado ---------- */
 
-// Producción: Cloudflare Access (se verifica el JWT firmado por Access: firma RS256, audiencia, emisor y vencimiento).
-// Desarrollo / respaldo: clave de administración (secreto ADMIN_CLAVE) en el encabezado x-admin-clave.
+// Producción: Cloudflare Access protege TODO el Worker del panel, y además acá se verifica el JWT de Access
+// (encabezado Cf-Access-Jwt-Assertion: firma RS256 con las claves públicas del equipo, iss, aud, exp y nbf).
+// Solo en desarrollo local (PERMITIR_CLAVE_ADMIN = "true"): clave de administración en el encabezado x-admin-clave.
 let jwksCache = null;
-async function usuarioAdmin(req, env) {
+export async function usuarioAdmin(req, env) {
   const jwt = req.headers.get('cf-access-jwt-assertion');
   if (jwt && env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD) {
     try {
       const [h, p, s] = jwt.split('.');
       const dec = x => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(x.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))));
       const head = dec(h), pay = dec(p);
-      const equipo = `https://${env.ACCESS_TEAM_DOMAIN}`;
+      if (head.alg !== 'RS256') return null;
+      const equipo = `https://${env.ACCESS_TEAM_DOMAIN.replace(/^https:\/\//, '').replace(/\/$/, '')}`;
       if (pay.iss !== equipo) return null;
       if (!(Array.isArray(pay.aud) ? pay.aud : [pay.aud]).includes(env.ACCESS_AUD)) return null;
-      if (!pay.exp || pay.exp * 1000 < Date.now()) return null;
+      const ahoraS = Date.now() / 1000;
+      if (!pay.exp || pay.exp < ahoraS) return null;
+      if (pay.nbf && pay.nbf > ahoraS + 60) return null;
       if (!jwksCache || jwksCache.vence < Date.now()) {
-        const r = await fetch(`${equipo}/cdn-cgi/access/certs`);
+        const r = await fetch(env.ACCESS_CERTS_URL || `${equipo}/cdn-cgi/access/certs`); // ACCESS_CERTS_URL: solo para pruebas locales
         jwksCache = { claves: (await r.json()).keys || [], vence: Date.now() + 3600e3 };
       }
       const jwk = jwksCache.claves.find(k => k.kid === head.kid);
@@ -889,14 +896,88 @@ async function usuarioAdmin(req, env) {
       return ok ? (pay.email || 'access') : null;
     } catch { return null; }
   }
+  if (env.PERMITIR_CLAVE_ADMIN !== 'true') return null; // en producción, solo Access
   const clave = (req.headers.get('x-admin-clave') || '').trim(), esperada = (env.ADMIN_CLAVE || '').trim();
   if (esperada.length >= 32 && clave.length === esperada.length && igualesTiempoConstante(clave, esperada)) return 'admin-clave';
   return null;
 }
 
+/* ---------- Calendario exportado a Booking / Airbnb (desde el Worker, al momento) ----------
+   Incluye: fechas de las otras plataformas (copia sincronizada), reservas directas de casa.json y TODAS las noches
+   retenidas en nuestra base (aprobadas, pendientes de pago, pagadas, confirmadas, en conflicto), salvo las de prueba.
+   A cada plataforma no se le devuelve lo que vino de ella. Solo fechas: nunca nombres ni datos. */
+function unirBloques(bloques) {
+  const ord = [...bloques].sort((a, b) => a.desde.localeCompare(b.desde)), out = [];
+  for (const b of ord) { const u = out[out.length - 1]; if (u && b.desde <= u.hasta) { if (b.hasta > u.hasta) u.hasta = b.hasta; } else out.push({ desde: b.desde, hasta: b.hasta }); }
+  return out;
+}
+async function bloquesPropios(env) {
+  const { results } = await env.DB.prepare(`SELECT r.ingreso desde, r.salida hasta FROM reservas r
+    WHERE r.origen <> 'prueba' AND EXISTS (SELECT 1 FROM noches n WHERE n.reserva_id = r.id)`).all();
+  return results.map(r => ({ ...r, fuente: 'web' }));
+}
+async function calendarioExportado(env, plataforma) {
+  const [casa, sync, propios] = await Promise.all([datosCasa(env), calendarioPublicado(env), bloquesPropios(env)]);
+  const hoy = hoyAR();
+  const externos = ((sync && sync.ocupadas) || []).filter(b => fechaValida(b.desde) && fechaValida(b.hasta));
+  const directas = (casa.ocupadas || []).filter(b => b && fechaValida(b.desde) && fechaValida(b.hasta)).map(b => ({ desde: b.desde, hasta: b.hasta, fuente: 'directa' }));
+  const todas = [...directas, ...propios, ...externos].filter(b => b.hasta > hoy && b.hasta > b.desde);
+  const propiasDe = todas.filter(b => b.fuente === plataforma);
+  const elegidas = plataforma === 'todas' ? todas
+    : todas.filter(b => b.fuente !== plataforma && !propiasDe.some(a => a.desde <= b.desde && b.hasta <= a.hasta));
+  const sello = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+  const ev = unirBloques(elegidas).map(b => ['BEGIN:VEVENT', `UID:${b.desde}-${b.hasta}-${plataforma}@casacampolasmaravillas`, `DTSTAMP:${sello}`,
+    `DTSTART;VALUE=DATE:${b.desde.replace(/-/g, '')}`, `DTEND;VALUE=DATE:${b.hasta.replace(/-/g, '')}`, 'SUMMARY:No disponible', 'END:VEVENT'].join('\r\n'));
+  const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', `PRODID:-//Casa Campo Las Maravillas//${plataforma}//ES`, 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+    'X-WR-CALNAME:Casa Campo Las Maravillas', ...ev, 'END:VCALENDAR', ''].join('\r\n');
+  return new Response(ics, { headers: { 'content-type': 'text/calendar; charset=utf-8', 'cache-control': 'public, max-age=300' } });
+}
+
+/* ---------- Consulta EN VIVO a Booking y Airbnb al aprobar (no espera la sincronización de GitHub) ---------- */
+function parseIcalSimple(texto) {
+  const lineas = texto.replace(/\r\n/g, '\n').replace(/\n[ \t]/g, '').split('\n'), out = []; let ev = null;
+  for (const l of lineas) {
+    if (l === 'BEGIN:VEVENT') ev = {};
+    else if (l === 'END:VEVENT') { if (ev && ev.desde && ev.estado !== 'CANCELLED') out.push({ desde: ev.desde, hasta: ev.hasta && ev.hasta > ev.desde ? ev.hasta : addDays(ev.desde, 1) }); ev = null; }
+    else if (ev) {
+      const i = l.indexOf(':'); if (i < 0) continue;
+      const k = l.slice(0, i).split(';')[0].toUpperCase(), v = l.slice(i + 1).trim(), m = v.match(/^(\d{4})(\d{2})(\d{2})/);
+      if (k === 'DTSTART' && m) ev.desde = `${m[1]}-${m[2]}-${m[3]}`;
+      if (k === 'DTEND' && m) ev.hasta = `${m[1]}-${m[2]}-${m[3]}`;
+      if (k === 'STATUS') ev.estado = v.toUpperCase();
+    }
+  }
+  return out;
+}
+function fuentesIcal(env) {
+  const f = (env.ICAL_URLS || '').split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#')).map(l => {
+    const p = l.split(/\s+/), url = p.find(x => /^https?:\/\//i.test(x)); if (!url) return null;
+    return { nombre: (p[0] !== url ? p[0] : new URL(url).hostname).toLowerCase(), url };
+  }).filter(Boolean);
+  const a = (env.AIRBNB_ICAL_URL || '').trim().split(/\s+/).find(x => /^https?:\/\//i.test(x));
+  if (a) { for (let i = f.length - 1; i >= 0; i--) if (f[i].nombre === 'airbnb') f.splice(i, 1); f.push({ nombre: 'airbnb', url: a }); }
+  return f;
+}
+export async function revisarEnVivo(env, ingreso, salida) {
+  const fuentes = fuentesIcal(env), noches = listaNoches(ingreso, salida), resultado = { ocupadas_en: [], fallaron: [], consultadas: [] };
+  if (!fuentes.length) { resultado.fallaron.push('sin calendarios configurados'); return resultado; }
+  await Promise.all(fuentes.map(async f => {
+    try {
+      const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 8000);
+      const r = await fetch(f.url, { signal: ctl.signal, headers: { 'user-agent': 'CasaCampoLasMaravillas-panel/1.0' } }); clearTimeout(to);
+      const t = await r.text();
+      if (!r.ok || !t.includes('BEGIN:VCALENDAR') || !t.includes('END:VCALENDAR')) throw new Error('respuesta inválida');
+      resultado.consultadas.push(f.nombre);
+      const ocup = new Set(); for (const b of parseIcalSimple(t)) for (const d of listaNoches(b.desde, b.hasta)) ocup.add(d);
+      if (noches.some(d => ocup.has(d))) resultado.ocupadas_en.push(f.nombre);
+    } catch { resultado.fallaron.push(f.nombre); }
+  }));
+  return resultado;
+}
+
 /* ---------- API del panel ---------- */
 
-async function apiAdmin(req, env, ctx, url) {
+export async function apiAdmin(req, env, ctx, url) {
   const quien = await usuarioAdmin(req, env);
   if (!quien) return json({ error: 'no_autorizado' }, 401, {});
   const sinCache = { 'cache-control': 'no-store', 'x-robots-tag': 'noindex' };
@@ -921,8 +1002,8 @@ async function revisarSolicitud(env, id) {
   const s = await env.DB.prepare('SELECT * FROM solicitudes WHERE id = ?').bind(id).first();
   if (!s) throw new ErrorUsuario('no_encontrado', 'Solicitud inexistente.', 404);
   const casa = await datosCasa(env);
-  const disp = await revisarDisponibilidad(env, casa, s, { incluirPruebas: false });
-  return { numero: s.numero, disponible: disp.disponible, advertencias: disp.motivos };
+  const [disp, vivo] = await Promise.all([revisarDisponibilidad(env, casa, s, { incluirPruebas: false }), revisarEnVivo(env, s.ingreso, s.salida)]);
+  return { numero: s.numero, disponible: disp.disponible && !vivo.ocupadas_en.length, advertencias: disp.motivos, en_vivo: vivo };
 }
 
 async function aprobarSolicitud(env, id, quien, body) {
@@ -933,9 +1014,18 @@ async function aprobarSolicitud(env, id, quien, body) {
   const casa = await datosCasa(env);
   const disp = await revisarDisponibilidad(env, casa, s, { incluirPruebas: false });
   if (!disp.disponible) throw new ErrorUsuario('no_disponible', 'Según nuestros datos esas fechas ya no están libres (otra reserva, Booking o Airbnb).', 409);
+  // Consulta EN VIVO a Booking y Airbnb (sus calendarios exportados), sin esperar la sincronización periódica.
+  const vivo = await revisarEnVivo(env, s.ingreso, s.salida);
+  if (vivo.ocupadas_en.length) throw new ErrorUsuario('no_disponible', `Consulta en vivo: hay una reserva o cierre en ${vivo.ocupadas_en.join(' y ')} para esas fechas.`, 409);
+  if (vivo.fallaron.length && body.forzar !== true) {
+    throw new ErrorUsuario('verificacion_en_vivo', `No se pudo consultar en vivo: ${vivo.fallaron.join(', ')}. Revisalo manualmente en la plataforma y, si está libre, confirmá para aprobar igual.`, 409);
+  }
 
   const horas = Math.min(Math.max(Number(body.horas) || Number(env.RETENCION_HORAS || 24), 1), 72);
-  const t = ahora(), vence = new Date(Date.now() + horas * 3600e3).toISOString();
+  // Solo para solicitudes de PRUEBA: retención en segundos (5 a 600) para probar el vencimiento sin esperar horas.
+  const segPrueba = s.origen === 'prueba' ? Number.parseInt(body.segundos_prueba, 10) : NaN;
+  const msRet = Number.isInteger(segPrueba) && segPrueba >= 5 && segPrueba <= 600 ? segPrueba * 1000 : horas * 3600e3;
+  const t = ahora(), vence = new Date(Date.now() + msRet).toISOString();
   const rid = crypto.randomUUID();
   const noches = listaNoches(s.ingreso, s.salida);
   // Todo en una transacción: si alguna noche ya está tomada (otra aprobación simultánea), no se aprueba nada.
@@ -959,7 +1049,11 @@ async function aprobarSolicitud(env, id, quien, body) {
   const pago = env.ENVIO_LINK_AUTOMATICO === 'true' && env.PAGOS_HABILITADOS === 'true'
     ? { estado: 'pendiente_de_implementar' }
     : { estado: 'manual', motivo: 'Pagos online deshabilitados: coordiná la seña por WhatsApp.' };
-  return { numero: s.numero, estado: 'aprobada', retencion_vence: vence, horas, advertencias: disp.motivos, pago };
+  return {
+    numero: s.numero, estado: 'aprobada', retencion_vence: vence, horas, advertencias: disp.motivos, en_vivo: vivo, pago,
+    // Booking y Airbnb leen nuestro calendario cada varias horas: hasta entonces, conviene cerrar las fechas a mano.
+    siguiente_paso: `Cerrá ahora ${fmtFecha(s.ingreso)} a ${fmtFecha(s.salida)} (salida) en Booking y Airbnb. Nuestro calendario ya las incluye, pero las plataformas pueden tardar horas en leerlo.`
+  };
 }
 
 async function rechazarSolicitud(env, id, quien, body) {
@@ -985,7 +1079,7 @@ async function rechazarSolicitud(env, id, quien, body) {
 
 /* ---------- Panel (HTML) ---------- */
 
-async function panelAdmin(req, env) {
+export async function panelAdmin(req, env) {
   return new Response(PANEL_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-robots-tag': 'noindex, nofollow',
     'content-security-policy': "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'" } });
 }
@@ -1004,7 +1098,7 @@ main{max-width:980px;margin:0 auto;padding:16px}.s{background:#fff;border-radius
 <p class="m" id="info"></p><div id="lista"></div></main>
 <script>
 const H = () => { const c = sessionStorage.getItem('clave'); return c ? { 'x-admin-clave': c } : {}; };
-const api = async (u, o = {}) => { const r = await fetch(u, { ...o, headers: { 'content-type': 'application/json', ...H(), ...(o.headers || {}) } }); const d = await r.json().catch(() => ({})); if (r.status === 401) { document.getElementById('login').hidden = false; throw new Error('no autorizado'); } if (!r.ok) throw new Error(d.mensaje || d.error || r.status); return d; };
+const api = async (u, o = {}) => { const r = await fetch(u, { ...o, headers: { 'content-type': 'application/json', ...H(), ...(o.headers || {}) } }); const d = await r.json().catch(() => ({})); if (r.status === 401) { document.getElementById('login').hidden = false; throw new Error('no autorizado'); } if (!r.ok) { const er = new Error(d.mensaje || d.error || r.status); er.codigo = d.error; throw er; } return d; };
 const f = s => s ? s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4) : '';
 const p = n => '$' + Number(n).toLocaleString('es-AR');
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -1027,9 +1121,22 @@ document.getElementById('lista').addEventListener('click', async e => {
   let body = {};
   if (a === 'aprobar') { const h = prompt('¿Cuántas horas retener las fechas? (1 a 72)', '24'); if (h === null) return; body.horas = Number(h); if (!confirm('¿Confirmás que revisaste Booking y Airbnb y las fechas están libres?')) return; }
   if (a === 'rechazar') { const m = prompt('Motivo (opcional, no se envía al huésped):', 'Fechas no disponibles'); if (m === null) return; body.motivo = m; }
-  try { const r = await api('/api/admin/solicitudes/' + id + '/' + a, { method: 'POST', body: JSON.stringify(body) });
-    if (a === 'revisar') { msg.textContent = (r.disponible ? '✓ Libre según nuestros datos. ' : '✗ No disponible. ') + (r.advertencias || []).join(' · '); return; }
-    await cargar(); } catch (err) { msg.textContent = err.message; }
+  const enviar = () => api('/api/admin/solicitudes/' + id + '/' + a, { method: 'POST', body: JSON.stringify(body) });
+  try {
+    let r;
+    try { r = await enviar(); }
+    catch (err) {
+      if (err.codigo !== 'verificacion_en_vivo' || !confirm(err.message + '\\n\\n¿Lo revisaste a mano y está libre?')) throw err;
+      body.forzar = true; r = await enviar();
+    }
+    if (a === 'revisar') {
+      const v = r.en_vivo || {};
+      msg.textContent = (r.disponible ? '✓ Libre. ' : '✗ No disponible. ') + 'En vivo: ' + ((v.consultadas || []).join(', ') || 'ninguna') + (v.ocupadas_en && v.ocupadas_en.length ? ' · OCUPADO en ' + v.ocupadas_en.join(', ') : '') + (v.fallaron && v.fallaron.length ? ' · sin respuesta: ' + v.fallaron.join(', ') : '') + '. ' + (r.advertencias || []).join(' · ');
+      return;
+    }
+    if (a === 'aprobar' && r.siguiente_paso) alert('Aprobada. ' + r.siguiente_paso);
+    await cargar();
+  } catch (err) { msg.textContent = err.message; }
 });
 document.getElementById('entrar').onclick = () => { sessionStorage.setItem('clave', document.getElementById('clave').value); cargar().catch(() => {}); };
 cargar().catch(() => {});

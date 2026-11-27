@@ -37,5 +37,7 @@ BLOQUEO_MINUTOS = "30"
 PAGOS_HABILITADOS = "false"
 # Crear bloqueos está cerrado al público hasta conectar la web (solo con la clave de pruebas).
 BLOQUEOS_PUBLICOS = "false"
+# Etapa 1: solicitudes en línea APAGADAS hasta configurar Turnstile, Telegram y Access.
+SOLICITUDES_HABILITADAS = "false"
 MP_MODO = "prueba"
 CONFIRMACION_AUTOMATICA = "false"
