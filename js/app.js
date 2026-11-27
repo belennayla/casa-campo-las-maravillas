@@ -56,10 +56,11 @@
     const f = lbList[lbIdx];
     $('#lb-img').src = src(f[0]); $('#lb-img').alt = f[2];
     $('#lb-cap').textContent = `${f[2]} · ${lbIdx + 1} de ${lbList.length}`;
-    $('#lb').hidden = false; document.body.style.overflow = 'hidden';
+    if ($('#lb').hidden) { lastFocus = document.activeElement; $('#lb').hidden = false; document.body.style.overflow = 'hidden'; $('#lb-x').focus(); }
     [1, -1].forEach(k => { const g = lbList[(lbIdx + k + lbList.length) % lbList.length]; new Image().src = src(g[0]); });
   }
-  function closeLb() { $('#lb').hidden = true; document.body.style.overflow = ''; }
+  let lastFocus = null;
+  function closeLb() { $('#lb').hidden = true; document.body.style.overflow = ''; if (lastFocus) lastFocus.focus(); }
   $('#lb-x').onclick = closeLb;
   $('#lb-prev').onclick = () => openLb(lbIdx - 1);
   $('#lb-next').onclick = () => openLb(lbIdx + 1);
@@ -124,7 +125,7 @@
       const first = new Date(st.view.getFullYear(), st.view.getMonth() + k, 1);
       const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
       const lead = (first.getDay() + 6) % 7; // lunes primero
-      let html = `<div class="month"><h4>${(m => m[0].toUpperCase() + m.slice(1))(first.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' }))}</h4>
+      let html = `<div class="month"><p class="month__t">${(m => m[0].toUpperCase() + m.slice(1))(first.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' }))}</p>
         <div class="dow">${['lu', 'ma', 'mi', 'ju', 'vi', 'sá', 'do'].map(d => `<span>${d}</span>`).join('')}</div><div class="days">`;
       html += '<span></span>'.repeat(lead);
       for (let d = 1; d <= days; d++) {
