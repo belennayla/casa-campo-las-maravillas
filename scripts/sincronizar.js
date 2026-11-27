@@ -11,8 +11,9 @@
                                   (es el link que se pega en cada plataforma, así no se pisa a sí misma).
 
   ICAL_URLS: una línea por plataforma, "nombre URL". Ejemplo:
-     airbnb https://www.airbnb.com.ar/calendar/ical/123.ics?s=abc
      booking https://ical.booking.com/v1/export?t=xyz
+  AIRBNB_ICAL_URL: solo el link de exportación de Airbnb (secreto propio, independiente de ICAL_URLS).
+  Los links nunca se escriben en los archivos públicos ni en el registro.
 
   Si una plataforma no responde, se reutilizan sus fechas de la última sincronización publicada
   (SITE_URL), para no mostrar como libres fechas que estaban ocupadas.
@@ -50,6 +51,22 @@ function parseIcal(texto) {
   return eventos
     .filter(e => e.estado !== 'CANCELLED')
     .map(e => ({ desde: e.desde, hasta: e.hasta && e.hasta > e.desde ? e.hasta : addDays(e.desde, 1) }));
+}
+// Une bloques superpuestos o contiguos en uno solo (evita duplicados en los calendarios exportados)
+function unir(bloques, fuente) {
+  const ord = [...bloques].sort((a, b) => a.desde.localeCompare(b.desde));
+  const out = [];
+  for (const b of ord) {
+    const u = out[out.length - 1];
+    if (u && b.desde <= u.hasta) { if (b.hasta > u.hasta) u.hasta = b.hasta; }
+    else out.push({ desde: b.desde, hasta: b.hasta, fuente });
+  }
+  return out;
+}
+// Quita bloques repetidos exactamente iguales dentro de una misma fuente
+function sinRepetidos(bloques) {
+  const vistos = new Set();
+  return bloques.filter(b => { const k = `${b.fuente}|${b.desde}|${b.hasta}`; if (vistos.has(k)) return false; vistos.add(k); return true; });
 }
 function validoBloque(b) {
   const f = /^\d{4}-\d{2}-\d{2}$/;
@@ -91,6 +108,15 @@ async function main() {
     })
     .filter(Boolean);
 
+  // Secreto independiente para Airbnb (AIRBNB_ICAL_URL). Si también hay una línea "airbnb" en ICAL_URLS, se usa la del secreto propio.
+  const airbnbUrl = (process.env.AIRBNB_ICAL_URL || '').trim().split(/\s+/).find(p => /^https?:\/\//i.test(p));
+  if (airbnbUrl) {
+    for (let i = fuentes.length - 1; i >= 0; i--) if (fuentes[i].nombre === 'airbnb') fuentes.splice(i, 1);
+    fuentes.push({ nombre: 'airbnb', url: airbnbUrl });
+  } else if ((process.env.AIRBNB_ICAL_URL || '').trim()) {
+    console.log('⚠ AIRBNB_ICAL_URL no contiene un link válido (debe empezar con https://).');
+  }
+
   let anterior = null;
   if (process.env.SITE_URL) {
     try { anterior = await (await fetch(process.env.SITE_URL.replace(/\/$/, '') + '/data/ocupadas-sync.json', { cache: 'no-store' })).json(); }
@@ -105,7 +131,7 @@ async function main() {
       const texto = await r.text();
       if (!texto.includes('BEGIN:VCALENDAR')) throw new Error('la respuesta no es un calendario');
       if (!texto.includes('END:VCALENDAR')) throw new Error('el calendario llegó incompleto');
-      const evs = parseIcal(texto).filter(b => b.hasta > desdeHoy && validoBloque(b));
+      const evs = sinRepetidos(parseIcal(texto).filter(b => b.hasta > desdeHoy && validoBloque(b)).map(b => ({ ...b, fuente: f.nombre })));
       evs.forEach(b => bloques.push({ ...b, fuente: f.nombre }));
       estado[f.nombre] = { ok: true, eventos: evs.length, actualizado: new Date().toISOString() };
       console.log(`✓ ${f.nombre}: ${evs.length} bloques`);
@@ -123,7 +149,7 @@ async function main() {
     actualizado: new Date().toISOString(),
     fuentes_configuradas: fuentes.map(f => f.nombre),
     fuentes: estado,
-    ocupadas: bloques.map(b => ({ desde: b.desde, hasta: b.hasta, fuente: b.fuente }))
+    ocupadas: sinRepetidos(bloques.map(b => ({ desde: b.desde, hasta: b.hasta, fuente: b.fuente })))
   };
   fs.writeFileSync(path.join(ROOT, 'data/ocupadas-sync.json'), JSON.stringify(sync, null, 1));
   if (!fuentes.length) console.log('⚠ No hay calendarios configurados (secreto ICAL_URLS vacío o inexistente).');
@@ -133,9 +159,15 @@ async function main() {
   invalidas.forEach(b => console.log(`⚠ Bloque manual inválido en data/casa.json, revisar: ${JSON.stringify({ desde: b.desde, hasta: b.hasta })}`));
   const directas = (casa.ocupadas || []).filter(b => validoBloque(b) && b.hasta > desdeHoy).map(b => ({ desde: b.desde, hasta: b.hasta, fuente: 'directa' }));
   const todas = [...directas, ...bloques];
-  fs.writeFileSync(path.join(ROOT, 'calendario.ics'), crearIcal(todas, 'todas'));
+  fs.writeFileSync(path.join(ROOT, 'calendario.ics'), crearIcal(unir(todas, 'todas'), 'todas'));
   const nombres = new Set([...PLATAFORMAS, ...fuentes.map(f => f.nombre)]);
-  for (const n of nombres) fs.writeFileSync(path.join(ROOT, `calendario-${n}.ics`), crearIcal(todas.filter(b => b.fuente !== n), n));
+  for (const n of nombres) {
+    // Para cada plataforma: todo lo que NO vino de ella, sin sus propias reservas devueltas por otra
+    // (p. ej. una reserva de Airbnb que Booking re-exporta no vuelve a Airbnb como bloqueo).
+    const propias = todas.filter(b => b.fuente === n);
+    const ajenas = todas.filter(b => b.fuente !== n && !propias.some(a => a.desde <= b.desde && b.hasta <= a.hasta));
+    fs.writeFileSync(path.join(ROOT, `calendario-${n}.ics`), crearIcal(unir(ajenas, n), n));
+  }
   console.log(`Listo: ${directas.length} directas + ${bloques.length} de plataformas · calendarios: ${[...nombres].join(', ')}`);
 }
 

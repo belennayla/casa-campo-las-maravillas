@@ -35,6 +35,7 @@ jobs:
       - name: Sincronizar calendarios (Airbnb, Booking, Vrbo…)
         env:
           ICAL_URLS: ${{ secrets.ICAL_URLS }}
+          AIRBNB_ICAL_URL: ${{ secrets.AIRBNB_ICAL_URL }}
           SITE_URL: ${{ steps.pages.outputs.base_url }}
         run: node scripts/sincronizar.js
 

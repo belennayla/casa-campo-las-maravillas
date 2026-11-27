@@ -15,7 +15,7 @@ Vrbo  ──┘   + reservas directas    └─► genera un link para cada plat
 - Una reserva en **Airbnb** bloquea esos días en la web, en Booking y en Vrbo.
 - Una **reserva directa** cargada en la web bloquea esos días en Airbnb, Booking y Vrbo.
 - Las plataformas leen los calendarios externos cada unas pocas horas (lo decide cada plataforma). Por eso siempre conviene confirmar por WhatsApp antes de cobrar la seña.
-- Hoy está conectado **solo Booking** (secreto `ICAL_URLS` con una línea `booking ...`). Las reservas de Airbnb y Vrbo llegan a la web **a través de Booking**, porque Booking ya está sincronizado con esas plataformas.
+- Hoy están conectados **Booking** (secreto `ICAL_URLS`, línea `booking ...`) y **Airbnb** (secreto propio `AIRBNB_ICAL_URL`, solo el link). Vrbo llega a través de Booking. Si una reserva aparece en los dos calendarios (porque Booking re-exporta la de Airbnb), la web la muestra una sola vez y no se la devuelve a su plataforma de origen.
 
 ### Archivos generados (no están en el repositorio)
 
@@ -24,14 +24,14 @@ Vrbo  ──┘   + reservas directas    └─► genera un link para cada plat
 ### Cuándo la web muestra "Disponibilidad a confirmar"
 
 La web solo dice "Sincronizado con …" si se cumple todo esto:
-- las plataformas de `fuentes_esperadas` (en `data/casa.json`, hoy `["booking"]`) respondieron bien;
+- las plataformas de `fuentes_esperadas` (en `data/casa.json`, hoy `["booking", "airbnb"]`) respondieron bien;
 - la última sincronización tiene menos de `sync_max_horas` (26 h);
 - `calendario_actualizado` es `true` (ustedes confirman que cargaron todas las reservas directas);
 - hay al menos una fecha ocupada a futuro (un calendario totalmente vacío se toma como sospechoso).
 
 Si algo falla, aparece un aviso naranja arriba del calendario y en el detalle del precio, que explica qué no se pudo comprobar. Para ver el detalle técnico: pestaña **Actions** de GitHub → la última ejecución → paso "Sincronizar calendarios" (muestra ✓ o ✗ por plataforma).
 
-Si en algún momento conectan Airbnb directo, agreguen la línea `airbnb ...` al secreto y `"airbnb"` a `fuentes_esperadas`.
+Para cambiar el link de Airbnb: Settings → Secrets and variables → Actions → `AIRBNB_ICAL_URL` → Update.
 
 ## Paso 1 · Copiar el link de cada plataforma (exportar)
 
