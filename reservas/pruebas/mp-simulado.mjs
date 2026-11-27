@@ -6,6 +6,7 @@ import http from 'node:http';
 const ordenes = new Map();     // id -> orden
 const porClave = new Map();    // idempotency key -> { id, cuerpo }
 let creadas = 0, cuentaPrueba = true, fallarGet = 0;
+const telegram = []; let telegramFalla = 0;
 
 const responder = (res, status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(data === undefined ? '' : JSON.stringify(data)); };
 const leer = req => new Promise(ok => { let b = ''; req.on('data', c => b += c); req.on('end', () => ok(b)); });
@@ -28,6 +29,17 @@ http.createServer(async (req, res) => {
   }
   if (url.pathname === '/__control/config') { const c = JSON.parse(cuerpo); if ('cuentaPrueba' in c) cuentaPrueba = c.cuentaPrueba; if ('fallarGet' in c) fallarGet = c.fallarGet; return responder(res, 200, { cuentaPrueba, fallarGet }); }
   if (url.pathname === '/__control/resumen') return responder(res, 200, { creadas, ordenes: [...ordenes.values()].map(o => ({ id: o.id, status: o.status, total_amount: o.total_amount, external_reference: o.external_reference, expiration_time: o.expiration_time, not_allowed_types: o.config?.payment_method?.not_allowed_types })) });
+
+  // --- Turnstile simulado: token "ok" = humano; cualquier otro = rechazado ---
+  if (url.pathname === '/turnstile/v0/siteverify' && req.method === 'POST') {
+    const token = (cuerpo.match(/name="response"\r\n\r\n([^\r]*)/) || [])[1] || new URLSearchParams(cuerpo).get('response');
+    const secreto = (cuerpo.match(/name="secret"\r\n\r\n([^\r]*)/) || [])[1] || new URLSearchParams(cuerpo).get('secret');
+    if (!secreto) return responder(res, 200, { success: false, 'error-codes': ['missing-input-secret'] });
+    return responder(res, 200, token === 'ok' ? { success: true, hostname: 'localhost' } : { success: false, 'error-codes': ['invalid-input-response'] });
+  }
+  // --- Telegram simulado ---
+  if (/^\/bot[^/]+\/sendMessage$/.test(url.pathname) && req.method === 'POST') { telegram.push(JSON.parse(cuerpo)); return responder(res, telegramFalla-- > 0 ? 500 : 200, { ok: true }); }
+  if (url.pathname === '/__control/telegram') { if (req.method === 'POST') { const c = JSON.parse(cuerpo || '{}'); telegramFalla = c.fallar || 0; } return responder(res, 200, { mensajes: telegram }); }
 
   // --- API simulada ---
   const auth = req.headers.authorization || '';

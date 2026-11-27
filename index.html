@@ -303,6 +303,7 @@
       </ul>
       <label class="check"><input type="checkbox" name="acepto" required> Leí y acepto las condiciones de la reserva</label>
     </div>
+    <div class="form__ts" id="ts" hidden></div>
     <p class="form__err" id="form-err" role="alert"></p>
     <button type="submit" class="btn btn--block">Preparar mensaje de WhatsApp</button>
   </form>
@@ -310,6 +311,7 @@
   <!-- CONFIRMACIÓN -->
   <div class="done" id="done" hidden>
     <h3>Revisá tu mensaje y envialo</h3>
+    <p class="done__num" id="sol-num" role="status" hidden></p>
     <p>Este es el mensaje que nos va a llegar. Podés modificarlo antes de enviarlo.</p>
     <textarea id="wa-msg" rows="12"></textarea>
     <a class="btn btn--wa btn--block" id="wa-link" href="#" target="_blank" rel="noopener">Enviar solicitud por WhatsApp</a>

@@ -43,6 +43,12 @@ export default {
         return await crearOrdenSena(req, env, cors);
       }
       if (url.pathname === '/api/webhooks/mercadopago' && req.method === 'POST') return await recibirWebhook(req, env, ctx);
+      if (url.pathname === '/api/solicitudes' && req.method === 'POST') {
+        if (!(await claveDePruebaValida(req, env))) await limitar(env.LIMITE_BLOQUEOS, req); // 5 por minuto por persona
+        return await crearSolicitud(req, env, ctx, cors);
+      }
+      if (url.pathname === '/admin' && req.method === 'GET') return await panelAdmin(req, env);
+      if (url.pathname.startsWith('/api/admin/')) return await apiAdmin(req, env, ctx, url);
       if (url.pathname === '/api/pruebas/mp-cuenta' && req.method === 'GET') return await diagnosticoCuenta(req, env, cors);
       const mp = url.pathname.match(/^\/api\/pruebas\/reservas\/([0-9a-f-]{36})$/);
       if (mp && req.method === 'GET') return await detallePrueba(mp[1], req, env, cors);
@@ -319,6 +325,7 @@ async function vencerBloqueos(env) {
   if (!results.length) return 0;
   const stmts = [];
   for (const { id } of results) {
+    stmts.push(env.DB.prepare("UPDATE solicitudes SET estado = 'vencida', actualizada = ? WHERE reserva_id = ? AND estado = 'aprobada'").bind(t, id));
     stmts.push(env.DB.prepare("UPDATE reservas SET estado = 'vencida', actualizada = ? WHERE id = ? AND estado IN ('bloqueo', 'pendiente_pago')").bind(t, id));
     stmts.push(env.DB.prepare('DELETE FROM noches WHERE reserva_id = ?').bind(id));
     stmts.push(env.DB.prepare('INSERT INTO eventos (reserva_id, fecha, tipo) VALUES (?, ?, ?)').bind(id, t, 'bloqueo_vencido'));
@@ -596,14 +603,19 @@ async function aplicarEstado(env, r, o, reintento = false) {
     await env.DB.batch(stmts); return 'ok';
   }
 
-  const terminada = ['canceled', 'expired', 'refunded'].includes(o.status);
   // Margen antes de cancelar una orden vencida, por si Mercado Pago todavía está terminando un pago (60 s por defecto).
   const vencida = r.vence_en && Date.parse(r.vence_en) + Number(env.MP_GRACIA_SEG ?? 60) * 1000 < Date.now();
+  // Terminal: cancelada / vencida / reembolsada; también "failed/expired" (la API real deja así una orden rechazada que venció),
+  // o una orden vencida que, después del intento de cancelación, sigue sin pago acreditado ni en proceso.
+  const terminada = ['canceled', 'expired', 'refunded'].includes(o.status)
+    || (o.status === 'failed' && o.status_detail === 'expired')
+    || (reintento && vencida && !enProceso);
   if (terminada) {
     // Se consultó el estado real y no hay seña acreditada: recién ahora se liberan las fechas.
     stmts.push(env.DB.prepare(`UPDATE reservas SET estado = ? WHERE id = ?`).bind(o.status === 'refunded' ? 'cancelada' : 'vencida', r.id));
+    stmts.push(env.DB.prepare("UPDATE solicitudes SET estado = 'vencida', actualizada = ? WHERE reserva_id = ? AND estado = 'aprobada'").bind(t, r.id));
     stmts.push(env.DB.prepare('DELETE FROM noches WHERE reserva_id = ?').bind(r.id));
-    stmts.push(evento(env, r.id, 'fechas_liberadas', { motivo: `orden_${o.status}` }));
+    if (r.estado !== 'vencida' && r.estado !== 'cancelada') stmts.push(evento(env, r.id, 'fechas_liberadas', { motivo: `orden_${o.status}${o.status_detail ? '_' + o.status_detail : ''}` }));
     await env.DB.batch(stmts); return 'ok';
   }
   if (vencida && !reintento && (o.status === 'created' || o.status === 'failed' || o.status === 'action_required')) {
@@ -671,7 +683,8 @@ async function registrarAcreditacion(env, r, o, acreditados, stmts) {
 /* ---------- 4) Tarea programada: reintentos y conciliación ---------- */
 
 async function tareaProgramada(env) {
-  const tareas = [['vencer', () => vencerBloqueos(env)], ['avisos', () => reintentarAvisos(env)], ['conciliar', () => conciliarOrdenes(env)]];
+  const tareas = [['vencer', () => vencerBloqueos(env)], ['avisos', () => reintentarAvisos(env)], ['conciliar', () => conciliarOrdenes(env)],
+    ['notificaciones', () => reintentarNotificaciones(env)]];
   for (const [nombre, f] of tareas) {
     try { await f(); } catch (e) { console.error('Tarea programada falló:', nombre, e && e.stack || e); }
   }
@@ -729,5 +742,297 @@ async function detallePrueba(id, req, env, cors) {
   ]);
   return json({ ...r, noches_retenidas: noches.results[0].n, pagos: pagos.results, devoluciones: devs.results, eventos: evs.results.map(e => e.tipo) }, 200, cors);
 }
+
+/* =====================================================================
+   ETAPA 1 · SOLICITUDES DE RESERVA (sin pagos)
+   - El huésped envía una solicitud (con Turnstile). NO se retienen fechas.
+   - Los dueños reciben un aviso (Telegram) y aprueban o rechazan desde el panel privado.
+   - Al aprobar, recién ahí se retienen las fechas, con vencimiento controlado (RETENCION_HORAS).
+   - Preparado para que, más adelante, al aprobar se genere y envíe el link de pago (ENVIO_LINK_AUTOMATICO).
+   ===================================================================== */
+
+const LETRAS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function numeroSolicitud(ingreso) {
+  const r = crypto.getRandomValues(new Uint8Array(4));
+  return `CC-${ingreso.slice(2, 4)}${ingreso.slice(5, 7)}${ingreso.slice(8, 10)}-${[...r].map(b => LETRAS[b % LETRAS.length]).join('')}`;
+}
+
+async function verificarTurnstile(env, token, ip) {
+  if (!env.TURNSTILE_SECRET) return { ok: false, motivo: 'turnstile_sin_configurar' };
+  if (!token || typeof token !== 'string' || token.length > 2048) return { ok: false, motivo: 'sin_token' };
+  const fd = new FormData();
+  fd.append('secret', env.TURNSTILE_SECRET);
+  fd.append('response', token);
+  if (ip) fd.append('remoteip', ip);
+  try {
+    const r = await fetch((env.TURNSTILE_API_BASE || 'https://challenges.cloudflare.com') + '/turnstile/v0/siteverify', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!d.success) return { ok: false, motivo: (d['error-codes'] || []).join(',') || 'rechazado' };
+    const hosts = (env.TURNSTILE_HOSTNAMES || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (hosts.length && d.hostname && !hosts.includes(d.hostname)) return { ok: false, motivo: 'hostname_no_permitido' };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, motivo: 'turnstile_sin_respuesta' };
+  }
+}
+
+async function crearSolicitud(req, env, ctx, cors) {
+  if (env.SOLICITUDES_HABILITADAS !== 'true') throw new ErrorUsuario('no_habilitado', 'Por ahora las solicitudes se reciben por WhatsApp.', 403);
+  const body = await leerJson(req);
+  const ts = await verificarTurnstile(env, body.turnstile, req.headers.get('cf-connecting-ip'));
+  if (!ts.ok) throw new ErrorUsuario('verificacion_fallida', 'No pudimos verificar que no seas un robot. Probá de nuevo o escribinos por WhatsApp.', 403);
+  const casa = await datosCasa(env);
+  const e = validarEstadia(body, casa);
+  const c = validarContacto(body);
+  const precio = calcularPrecio(casa, e);
+  const disp = await revisarDisponibilidad(env, casa, e, { incluirPruebas: false });
+  if (!disp.disponible) throw new ErrorUsuario('no_disponible', 'Esas fechas no están disponibles. Elegí otras o escribinos por WhatsApp.', 409);
+
+  // Evita duplicados: misma persona, mismas fechas, en los últimos 30 minutos → devuelve la misma solicitud.
+  const hace30 = new Date(Date.now() - 30 * 60e3).toISOString();
+  const dup = await env.DB.prepare(`SELECT numero FROM solicitudes WHERE telefono = ? AND ingreso = ? AND salida = ? AND estado = 'nueva' AND creada > ?`)
+    .bind(c.telefono, e.ingreso, e.salida, hace30).first();
+  if (dup) return json({ numero: dup.numero, estado: 'nueva', repetida: true, mensaje: MENSAJE_SOLICITUD }, 200, cors);
+
+  const id = crypto.randomUUID(), t = ahora();
+  let numero = null;
+  for (let i = 0; i < 4 && !numero; i++) {
+    const n = numeroSolicitud(e.ingreso);
+    try {
+      await env.DB.batch([
+        env.DB.prepare(`INSERT INTO solicitudes (id, numero, creada, actualizada, estado, ingreso, salida, noches, adultos, menores, huespedes,
+          precio_noche, total, sena, saldo, nombre, telefono, email, observaciones, disponible_al_solicitar)
+          VALUES (?, ?, ?, ?, 'nueva', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
+          .bind(id, n, t, t, e.ingreso, e.salida, e.noches, e.adultos, e.menores, e.huespedes, precio.precio_noche, precio.total, precio.sena, precio.saldo,
+            c.nombre, c.telefono, c.email, c.observaciones),
+        env.DB.prepare('INSERT INTO eventos (reserva_id, fecha, tipo, detalle) VALUES (?, ?, ?, ?)').bind(null, t, 'solicitud_creada', JSON.stringify({ numero: n }))
+      ]);
+      numero = n;
+    } catch (err) {
+      if (!/UNIQUE/i.test(String(err && err.message || err))) throw err; // número repetido: se genera otro
+    }
+  }
+  if (!numero) throw new Error('No se pudo generar un número de solicitud único');
+  ctx.waitUntil(notificarSolicitud(env, id));
+  return json({ numero, estado: 'nueva', ...precio, ingreso: e.ingreso, salida: e.salida, noches: e.noches, huespedes: e.huespedes, mensaje: MENSAJE_SOLICITUD }, 201, cors);
+}
+const MENSAJE_SOLICITUD = 'Recibimos tu solicitud. Las fechas todavía no están reservadas: los dueños revisan la disponibilidad y te responden por WhatsApp.';
+
+/* ---------- Notificaciones a los dueños (Telegram) ---------- */
+
+const fmtFecha = s => `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}`;
+const fmtPesos = n => '$' + Number(n).toLocaleString('es-AR');
+
+async function enviarTelegram(env, texto) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return { ok: false, motivo: 'sin_configurar' };
+  const r = await fetch(`${(env.TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/$/, '')}/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text: texto, disable_web_page_preview: true })
+  });
+  return { ok: r.ok, motivo: r.ok ? null : `HTTP ${r.status}` };
+}
+
+async function notificarSolicitud(env, id) {
+  try {
+    const s = await env.DB.prepare('SELECT * FROM solicitudes WHERE id = ?').bind(id).first();
+    if (!s || s.aviso_enviado) return;
+    const panel = (env.PANEL_URL || '').trim();
+    const texto = [
+      `🏡 Nueva solicitud ${s.numero}`,
+      `${fmtFecha(s.ingreso)} → ${fmtFecha(s.salida)} · ${s.noches} noches · ${s.huespedes} huéspedes`,
+      `Total ${fmtPesos(s.total)} · seña ${fmtPesos(s.sena)}`,
+      `${s.nombre} · ${s.telefono}${s.email ? ' · ' + s.email : ''}`,
+      s.observaciones ? `Nota: ${s.observaciones}` : null,
+      'Revisá Booking y Airbnb y aprobá o rechazá desde el panel.',
+      panel || null
+    ].filter(Boolean).join('\n');
+    const r = await enviarTelegram(env, texto);
+    if (r.ok) await env.DB.prepare('UPDATE solicitudes SET aviso_enviado = 1 WHERE id = ?').bind(id).run();
+    else console.warn('Aviso de solicitud no enviado', s.numero, r.motivo);
+  } catch (e) {
+    console.error('Error al notificar solicitud', id, e && e.message || e);
+  }
+}
+
+async function reintentarNotificaciones(env) {
+  if (!env.TELEGRAM_BOT_TOKEN) return;
+  const desde = new Date(Date.now() - 864e5).toISOString();
+  const { results } = await env.DB.prepare("SELECT id FROM solicitudes WHERE aviso_enviado = 0 AND estado = 'nueva' AND creada > ? LIMIT 20").bind(desde).all();
+  for (const { id } of results) await notificarSolicitud(env, id);
+}
+
+/* ---------- Acceso al panel privado ---------- */
+
+// Producción: Cloudflare Access (se verifica el JWT firmado por Access: firma RS256, audiencia, emisor y vencimiento).
+// Desarrollo / respaldo: clave de administración (secreto ADMIN_CLAVE) en el encabezado x-admin-clave.
+let jwksCache = null;
+async function usuarioAdmin(req, env) {
+  const jwt = req.headers.get('cf-access-jwt-assertion');
+  if (jwt && env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD) {
+    try {
+      const [h, p, s] = jwt.split('.');
+      const dec = x => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(x.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))));
+      const head = dec(h), pay = dec(p);
+      const equipo = `https://${env.ACCESS_TEAM_DOMAIN}`;
+      if (pay.iss !== equipo) return null;
+      if (!(Array.isArray(pay.aud) ? pay.aud : [pay.aud]).includes(env.ACCESS_AUD)) return null;
+      if (!pay.exp || pay.exp * 1000 < Date.now()) return null;
+      if (!jwksCache || jwksCache.vence < Date.now()) {
+        const r = await fetch(`${equipo}/cdn-cgi/access/certs`);
+        jwksCache = { claves: (await r.json()).keys || [], vence: Date.now() + 3600e3 };
+      }
+      const jwk = jwksCache.claves.find(k => k.kid === head.kid);
+      if (!jwk) return null;
+      const key = await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+      const firma = Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+      const ok = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, firma, new TextEncoder().encode(`${h}.${p}`));
+      return ok ? (pay.email || 'access') : null;
+    } catch { return null; }
+  }
+  const clave = (req.headers.get('x-admin-clave') || '').trim(), esperada = (env.ADMIN_CLAVE || '').trim();
+  if (esperada.length >= 32 && clave.length === esperada.length && igualesTiempoConstante(clave, esperada)) return 'admin-clave';
+  return null;
+}
+
+/* ---------- API del panel ---------- */
+
+async function apiAdmin(req, env, ctx, url) {
+  const quien = await usuarioAdmin(req, env);
+  if (!quien) return json({ error: 'no_autorizado' }, 401, {});
+  const sinCache = { 'cache-control': 'no-store', 'x-robots-tag': 'noindex' };
+  if (url.pathname === '/api/admin/solicitudes' && req.method === 'GET') {
+    const estado = url.searchParams.get('estado');
+    const q = estado ? env.DB.prepare('SELECT * FROM solicitudes WHERE estado = ? ORDER BY creada DESC LIMIT 200').bind(estado)
+      : env.DB.prepare("SELECT * FROM solicitudes ORDER BY CASE estado WHEN 'nueva' THEN 0 WHEN 'aprobada' THEN 1 ELSE 2 END, creada DESC LIMIT 200");
+    const { results } = await q.all();
+    return json({ usuario: quien, solicitudes: results, pagos_habilitados: env.PAGOS_HABILITADOS === 'true' }, 200, sinCache);
+  }
+  const m = url.pathname.match(/^\/api\/admin\/solicitudes\/([0-9a-f-]{36})\/(aprobar|rechazar|revisar)$/);
+  if (m && req.method === 'POST') {
+    const body = await leerJson(req).catch(() => ({}));
+    if (m[2] === 'revisar') return json(await revisarSolicitud(env, m[1]), 200, sinCache);
+    if (m[2] === 'aprobar') return json(await aprobarSolicitud(env, m[1], quien, body), 200, sinCache);
+    return json(await rechazarSolicitud(env, m[1], quien, body), 200, sinCache);
+  }
+  return json({ error: 'no_encontrado' }, 404, sinCache);
+}
+
+async function revisarSolicitud(env, id) {
+  const s = await env.DB.prepare('SELECT * FROM solicitudes WHERE id = ?').bind(id).first();
+  if (!s) throw new ErrorUsuario('no_encontrado', 'Solicitud inexistente.', 404);
+  const casa = await datosCasa(env);
+  const disp = await revisarDisponibilidad(env, casa, s, { incluirPruebas: false });
+  return { numero: s.numero, disponible: disp.disponible, advertencias: disp.motivos };
+}
+
+async function aprobarSolicitud(env, id, quien, body) {
+  const s = await env.DB.prepare('SELECT * FROM solicitudes WHERE id = ?').bind(id).first();
+  if (!s) throw new ErrorUsuario('no_encontrado', 'Solicitud inexistente.', 404);
+  if (!['nueva', 'vencida'].includes(s.estado)) throw new ErrorUsuario('estado_invalido', `La solicitud está "${s.estado}".`, 409);
+  if (s.ingreso < hoyAR()) throw new ErrorUsuario('fecha_pasada', 'La fecha de ingreso ya pasó.', 409);
+  const casa = await datosCasa(env);
+  const disp = await revisarDisponibilidad(env, casa, s, { incluirPruebas: false });
+  if (!disp.disponible) throw new ErrorUsuario('no_disponible', 'Según nuestros datos esas fechas ya no están libres (otra reserva, Booking o Airbnb).', 409);
+
+  const horas = Math.min(Math.max(Number(body.horas) || Number(env.RETENCION_HORAS || 24), 1), 72);
+  const t = ahora(), vence = new Date(Date.now() + horas * 3600e3).toISOString();
+  const rid = crypto.randomUUID();
+  const noches = listaNoches(s.ingreso, s.salida);
+  // Todo en una transacción: si alguna noche ya está tomada (otra aprobación simultánea), no se aprueba nada.
+  try {
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO reservas (id, creada, actualizada, estado, ingreso, salida, noches, adultos, menores, huespedes, precio_noche, total, sena, saldo,
+        moneda, nombre, telefono, email, observaciones, vence_en, origen, solicitud_id)
+        VALUES (?, ?, ?, 'bloqueo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ARS', ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(rid, t, t, s.ingreso, s.salida, s.noches, s.adultos, s.menores, s.huespedes, s.precio_noche, s.total, s.sena, s.saldo,
+          s.nombre, s.telefono, s.email, s.observaciones, vence, s.origen === 'prueba' ? 'prueba' : 'web', s.id),
+      ...noches.map(f => env.DB.prepare('INSERT INTO noches (fecha, reserva_id) VALUES (?, ?)').bind(f, rid)),
+      env.DB.prepare(`UPDATE solicitudes SET estado = 'aprobada', reserva_id = ?, retencion_vence = ?, revisada_por = ?, revisada_en = ?, actualizada = ?
+        WHERE id = ? AND estado IN ('nueva', 'vencida')`).bind(rid, vence, quien, t, t, s.id),
+      evento(env, rid, 'solicitud_aprobada', { numero: s.numero, por: quien, horas })
+    ]);
+  } catch (err) {
+    if (/UNIQUE|PRIMARY KEY|constraint/i.test(String(err && err.message || err))) throw new ErrorUsuario('no_disponible', 'Alguna de esas noches acaba de ser tomada por otra reserva.', 409);
+    throw err;
+  }
+  // Paso siguiente (preparado, apagado): generar la orden de seña y enviarle el link al huésped.
+  const pago = env.ENVIO_LINK_AUTOMATICO === 'true' && env.PAGOS_HABILITADOS === 'true'
+    ? { estado: 'pendiente_de_implementar' }
+    : { estado: 'manual', motivo: 'Pagos online deshabilitados: coordiná la seña por WhatsApp.' };
+  return { numero: s.numero, estado: 'aprobada', retencion_vence: vence, horas, advertencias: disp.motivos, pago };
+}
+
+async function rechazarSolicitud(env, id, quien, body) {
+  const s = await env.DB.prepare('SELECT * FROM solicitudes WHERE id = ?').bind(id).first();
+  if (!s) throw new ErrorUsuario('no_encontrado', 'Solicitud inexistente.', 404);
+  if (!['nueva', 'aprobada', 'vencida'].includes(s.estado)) throw new ErrorUsuario('estado_invalido', `La solicitud está "${s.estado}".`, 409);
+  const motivo = String(body.motivo || '').slice(0, 300) || null;
+  const t = ahora();
+  const stmts = [env.DB.prepare(`UPDATE solicitudes SET estado = 'rechazada', motivo = ?, revisada_por = ?, revisada_en = ?, actualizada = ? WHERE id = ?`)
+    .bind(motivo, quien, t, t, id)];
+  if (s.reserva_id) {
+    const r = await env.DB.prepare('SELECT estado, mp_order_id FROM reservas WHERE id = ?').bind(s.reserva_id).first();
+    if (r && r.mp_order_id && r.estado !== 'vencida') throw new ErrorUsuario('tiene_pago', 'Esta solicitud ya tiene un pago asociado: revisalo antes de rechazarla.', 409);
+    if (r && r.estado === 'bloqueo') {
+      stmts.push(env.DB.prepare("UPDATE reservas SET estado = 'cancelada', actualizada = ? WHERE id = ?").bind(t, s.reserva_id));
+      stmts.push(env.DB.prepare('DELETE FROM noches WHERE reserva_id = ?').bind(s.reserva_id));
+    }
+  }
+  stmts.push(evento(env, s.reserva_id, 'solicitud_rechazada', { numero: s.numero, por: quien, motivo }));
+  await env.DB.batch(stmts);
+  return { numero: s.numero, estado: 'rechazada' };
+}
+
+/* ---------- Panel (HTML) ---------- */
+
+async function panelAdmin(req, env) {
+  return new Response(PANEL_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-robots-tag': 'noindex, nofollow',
+    'content-security-policy': "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'" } });
+}
+
+const PANEL_HTML = `<!doctype html><html lang="es-AR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>Panel · Casa Campo Las Maravillas</title>
+<style>
+body{font:15px/1.5 system-ui,sans-serif;margin:0;background:#f7f2e9;color:#2a2822}header{background:#5b6b4a;color:#fff;padding:12px 16px}
+main{max-width:980px;margin:0 auto;padding:16px}.s{background:#fff;border-radius:10px;padding:14px;margin:10px 0;box-shadow:0 1px 3px #0001}
+.e{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;font-weight:700;background:#eee}.nueva{background:#fbeedd}.aprobada{background:#e3e8da}
+.rechazada,.vencida{background:#eee;color:#777}button{font:inherit;padding:6px 12px;border-radius:8px;border:1px solid #ccc;background:#fff;cursor:pointer;margin:4px 4px 0 0}
+.ok{background:#5b6b4a;color:#fff;border-color:#5b6b4a}.no{color:#964d2c}.msg{color:#964d2c;margin:6px 0 0}.m{color:#6b665a;font-size:13px}
+#login{max-width:420px}input{font:inherit;padding:8px;border:1px solid #ccc;border-radius:8px;width:100%}
+</style></head><body><header><b>Casa Campo Las Maravillas</b> · Solicitudes</header><main>
+<div id="login" hidden><p>Clave de administración (solo para pruebas locales; en producción se ingresa con Cloudflare Access):</p><input id="clave" type="password" autocomplete="off"><button class="ok" id="entrar">Entrar</button></div>
+<p class="m" id="info"></p><div id="lista"></div></main>
+<script>
+const H = () => { const c = sessionStorage.getItem('clave'); return c ? { 'x-admin-clave': c } : {}; };
+const api = async (u, o = {}) => { const r = await fetch(u, { ...o, headers: { 'content-type': 'application/json', ...H(), ...(o.headers || {}) } }); const d = await r.json().catch(() => ({})); if (r.status === 401) { document.getElementById('login').hidden = false; throw new Error('no autorizado'); } if (!r.ok) throw new Error(d.mensaje || d.error || r.status); return d; };
+const f = s => s ? s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4) : '';
+const p = n => '$' + Number(n).toLocaleString('es-AR');
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+async function cargar() {
+  const d = await api('/api/admin/solicitudes');
+  document.getElementById('login').hidden = true;
+  document.getElementById('info').textContent = 'Ingresaste como ' + d.usuario + ' · Pagos online: ' + (d.pagos_habilitados ? 'activados' : 'desactivados');
+  document.getElementById('lista').innerHTML = d.solicitudes.map(s => '<div class="s" data-id="' + s.id + '"><span class="e ' + s.estado + '">' + s.estado + '</span> <b>' + esc(s.numero) + '</b> · ' + f(s.ingreso) + ' → ' + f(s.salida) + ' · ' + s.noches + ' noches · ' + s.huespedes + ' huéspedes · total ' + p(s.total) + ' · seña ' + p(s.sena) +
+    '<div>' + esc(s.nombre) + ' · <a href="https://wa.me/' + esc(String(s.telefono).replace(/\\D/g, '')) + '" target="_blank" rel="noopener">' + esc(s.telefono) + '</a>' + (s.email ? ' · ' + esc(s.email) : '') + '</div>' +
+    (s.observaciones ? '<div class="m">Nota: ' + esc(s.observaciones) + '</div>' : '') +
+    (s.retencion_vence ? '<div class="m">Fechas retenidas hasta ' + new Date(s.retencion_vence).toLocaleString('es-AR') + '</div>' : '') +
+    (s.motivo ? '<div class="m">Motivo: ' + esc(s.motivo) + '</div>' : '') +
+    '<div class="m">Recibida ' + new Date(s.creada).toLocaleString('es-AR') + (s.revisada_por ? ' · revisada por ' + esc(s.revisada_por) : '') + '</div>' +
+    (['nueva','vencida'].includes(s.estado) ? '<button data-a="revisar">Revisar disponibilidad</button><button class="ok" data-a="aprobar">Aprobar y retener fechas</button>' : '') +
+    (['nueva','aprobada','vencida'].includes(s.estado) ? '<button class="no" data-a="rechazar">Rechazar</button>' : '') + '<p class="msg"></p></div>').join('') || '<p>No hay solicitudes.</p>';
+}
+document.getElementById('lista').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-a]'); if (!b) return;
+  const card = b.closest('.s'), msg = card.querySelector('.msg'), id = card.dataset.id, a = b.dataset.a;
+  let body = {};
+  if (a === 'aprobar') { const h = prompt('¿Cuántas horas retener las fechas? (1 a 72)', '24'); if (h === null) return; body.horas = Number(h); if (!confirm('¿Confirmás que revisaste Booking y Airbnb y las fechas están libres?')) return; }
+  if (a === 'rechazar') { const m = prompt('Motivo (opcional, no se envía al huésped):', 'Fechas no disponibles'); if (m === null) return; body.motivo = m; }
+  try { const r = await api('/api/admin/solicitudes/' + id + '/' + a, { method: 'POST', body: JSON.stringify(body) });
+    if (a === 'revisar') { msg.textContent = (r.disponible ? '✓ Libre según nuestros datos. ' : '✗ No disponible. ') + (r.advertencias || []).join(' · '); return; }
+    await cargar(); } catch (err) { msg.textContent = err.message; }
+});
+document.getElementById('entrar').onclick = () => { sessionStorage.setItem('clave', document.getElementById('clave').value); cargar().catch(() => {}); };
+cargar().catch(() => {});
+</script></body></html>`;
 
 export const _internos = { precioPorNoche, listaNoches, nochesEntre, fechaValida };

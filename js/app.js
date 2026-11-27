@@ -273,10 +273,41 @@
   $('#cal-prev').onclick = () => { st.view = new Date(st.view.getFullYear(), st.view.getMonth() - 1, 1); renderCal(); };
   $('#cal-next').onclick = () => { st.view = new Date(st.view.getFullYear(), st.view.getMonth() + 1, 1); renderCal(); };
   $('#btn-limpiar').onclick = () => { st.in = st.out = null; setMsg(''); $('#form').hidden = true; $('#done').hidden = true; renderCal(); renderQuote(); };
-  $('#btn-seguir').onclick = () => { $('#form').hidden = false; $('#done').hidden = true; $('#form').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#form [name=nombre]').focus({ preventScroll: true }); };
+  $('#btn-seguir').onclick = () => { $('#form').hidden = false; $('#done').hidden = true; prepararTurnstile(); $('#form').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#form [name=nombre]').focus({ preventScroll: true }); };
 
-  /* ---------- FORMULARIO → WHATSAPP ---------- */
-  $('#form').addEventListener('submit', e => {
+  /* ---------- SOLICITUD EN LÍNEA (etapa 1) ----------
+     Si está habilitada en casa.json, la solicitud se registra en el servidor (con Turnstile) y el huésped recibe
+     un número. NO retiene fechas: los dueños aprueban la disponibilidad. WhatsApp sigue como alternativa. */
+  const enLinea = () => !!(CASA && CASA.solicitudes_en_linea && CASA.api_reservas && CASA.turnstile_site_key);
+  let tsToken = null, tsWidget = null;
+  function prepararTurnstile() {
+    if (!enLinea() || tsWidget !== null) return;
+    const cont = $('#ts'); cont.hidden = false;
+    const render = () => { tsWidget = window.turnstile.render(cont, { sitekey: CASA.turnstile_site_key, language: 'es', callback: t => { tsToken = t; }, 'expired-callback': () => { tsToken = null; } }); };
+    if (window.turnstile) return render();
+    tsWidget = 'cargando';
+    const s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'; s.async = true;
+    s.onload = render; s.onerror = () => { tsWidget = null; cont.hidden = true; };
+    document.head.appendChild(s);
+  }
+  async function enviarSolicitud(datos) {
+    if (!enLinea() || !tsToken) return { error: 'sin_verificacion' };
+    try {
+      const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 12000);
+      const r = await fetch(CASA.api_reservas.replace(/\/$/, '') + '/api/solicitudes', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
+        body: JSON.stringify({ ingreso: st.in, salida: st.out, adultos: st.adultos, menores: st.menores, ...datos, acepto: true, turnstile: tsToken })
+      });
+      clearTimeout(to);
+      const d = await r.json().catch(() => ({}));
+      return r.ok ? d : { error: d.mensaje || 'error' };
+    } catch { return { error: 'sin_conexion' }; }
+    finally { tsToken = null; if (window.turnstile && typeof tsWidget === 'string' && tsWidget !== 'cargando') window.turnstile.reset(tsWidget); }
+  }
+
+  /* ---------- FORMULARIO → (SOLICITUD EN LÍNEA) + WHATSAPP ---------- */
+  $('#form').addEventListener('submit', async e => {
     e.preventDefault();
     const f = e.target, err = $('#form-err');
     const nombre = f.nombre.value.trim(), tel = f.telefono.value.trim(), email = f.email.value.trim(), obs = f.obs.value.trim();
@@ -284,13 +315,29 @@
     if (!nombre) return err.textContent = 'Completá tu nombre y apellido.';
     if (tel.replace(/\D/g, '').length < 8) return err.textContent = 'Completá un teléfono válido.';
     if (!f.acepto.checked) return err.textContent = 'Para continuar tenés que aceptar las condiciones de la reserva.';
+    if (enLinea() && tsWidget !== null && !tsToken) return err.textContent = 'Completá la verificación de seguridad (el recuadro de arriba).';
     err.textContent = '';
+    let sol = null;
+    if (enLinea() && tsWidget !== null) {
+      const boton = f.querySelector('button[type=submit]'), txt = boton.textContent;
+      boton.disabled = true; boton.textContent = 'Enviando solicitud…';
+      sol = await enviarSolicitud({ nombre, telefono: tel, email, observaciones: obs });
+      boton.disabled = false; boton.textContent = txt;
+    }
+    const num = $('#sol-num');
+    if (sol && sol.numero) {
+      num.hidden = false; num.className = 'done__num';
+      num.innerHTML = `Tu número de solicitud es <b>${sol.numero}</b>. Las fechas todavía no están reservadas: revisamos la disponibilidad y te respondemos por WhatsApp. Si querés, mandanos también el mensaje.`;
+    } else if (sol && sol.error) {
+      num.hidden = false; num.className = 'done__num done__num--aviso';
+      num.textContent = 'No pudimos registrar la solicitud en línea. Enviala por WhatsApp con el botón de abajo.';
+    } else num.hidden = true;
     const n = nightsBetween(st.in, st.out), g = guests();
     // Si el servidor verificó estas mismas fechas y huéspedes, se usan sus montos.
     const srvOk = SRV && SRV.key === claveSrv() && SRV.data && !SRV.error && SRV.data.disponible;
     const p = srvOk ? SRV.data.precio_noche : pricePerNight(g);
     const lines = [
-      'Hola! Quiero solicitar una reserva en Casa Campo Las Maravillas.', '',
+      'Hola! Quiero solicitar una reserva en Casa Campo Las Maravillas.' + (sol && sol.numero ? ` (Solicitud N° ${sol.numero})` : ''), '',
       `• Ingreso: ${fmtDate(st.in)} (de 15 a 18 h)`,
       `• Salida: ${fmtDate(st.out)} (hasta las 11 h)`,
       `• Noches: ${n}`,

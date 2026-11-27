@@ -115,6 +115,19 @@ const om6 = (await mpResumen()).ordenes.find(x => x.id === o.mp_order_id);
 ok(om6.status === 'canceled', 'antes de liberar, se consultó y se canceló la orden en Mercado Pago');
 ok(d.estado === 'vencida' && d.noches_retenidas === 0, 'recién después se liberaron las fechas');
 
+console.log('\n6b) Orden rechazada que vence (como la API real: failed / expired) → libera fechas');
+b = await bloquear(nuevasFechas(), 5); o = await orden(b.id);
+await mpEstado(o.mp_order_id, { status: 'action_required', status_detail: 'waiting_retry', pago: { status: 'failed', status_detail: 'rejected_by_issuer', paid_amount: '0.00' } });
+await webhook(o.mp_order_id);
+await esperar(6000);
+await mpEstado(o.mp_order_id, { status: 'failed', status_detail: 'expired' }); // Mercado Pago la venció
+await cron(); d = await detalle(b.id);
+ok(d.estado === 'vencida' && d.noches_retenidas === 0, 'orden failed/expired: se liberan las fechas (no queda trabada)');
+b = await bloquear(nuevasFechas(), 5); o = await orden(b.id);
+await mpEstado(o.mp_order_id, { status: 'failed', status_detail: 'rejected_by_issuer', pago: { status: 'failed', status_detail: 'rejected_by_issuer', paid_amount: '0.00' } });
+await esperar(6000); await cron(); d = await detalle(b.id);
+ok(d.estado === 'vencida' && d.noches_retenidas === 0, 'orden "failed" vencida que no se puede cancelar: igual se liberan las fechas tras consultar');
+
 console.log('\n7) Seña acreditada cuyo aviso se perdió: el vencimiento NO libera las fechas');
 b = await bloquear(nuevasFechas(), 5); o = await orden(b.id);
 await mpEstado(o.mp_order_id, pagado(String(b.sena)));   // se acredita pero NO mandamos aviso
