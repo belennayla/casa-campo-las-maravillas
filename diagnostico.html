@@ -54,6 +54,14 @@ code{background:#f1ece2;padding:0 4px;border-radius:4px}
     // b) Clave de pruebas
     var k = clave();
     f('Clave en esta pestaña', k ? '✅ guardada (' + k.length + ' caracteres; no se muestra)' : '❌ no hay clave en esta pestaña');
+    // Huellas: longitud y primeros 10 caracteres del SHA-256 (no permiten reconstruir la clave)
+    try {
+      var hs = await (await fetch(API + '/api/pruebas/huella-clave', { cache: 'no-store' })).json();
+      var hn = '';
+      if (k) { var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(k.trim())); hn = Array.from(new Uint8Array(buf)).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('').slice(0, 10); }
+      f('Huella en el servidor', hs.configurada ? (hs.largo_util >= 32 ? hs.largo + ' caracteres · huella <code>' + esc(hs.huella_sha256) + '</code>' + (hs.bom ? ' · ⚠️ tiene BOM' : '') + (hs.espacios_o_saltos ? ' · ⚠️ espacios o saltos' : '') : '❌ la clave del servidor está VACÍA o es muy corta (' + hs.largo + ' caracteres)') : '❌ CLAVE_PRUEBAS no está cargada');
+      f('Huella en este navegador', k ? k.length + ' caracteres · huella <code>' + hn + '</code> ' + (hn === hs.huella_sha256 ? '✅ coincide' : '❌ no coincide: pegá la clave correcta abajo') : '—');
+    } catch (e) {}
     try {
       var s = await (await fetch(API + '/api/salud', { headers: k ? { 'x-clave-pruebas': k } : {}, cache: 'no-store' })).json();
       f('Servidor', k ? (s.modo_reserva === 'instantanea' ? '✅ RECONOCE la clave: reservas de prueba autorizadas' : '❌ NO reconoce la clave (no coincide con CLAVE_PRUEBAS)') : 'sin clave para verificar');

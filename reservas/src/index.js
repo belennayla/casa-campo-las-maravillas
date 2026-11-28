@@ -63,6 +63,7 @@ export default {
       const cal = url.pathname.match(/^\/calendario-(booking|airbnb|vrbo|todas)\.ics$/);
       if (cal && req.method === 'GET') return await calendarioExportado(env, cal[1]);
       if (url.pathname === '/api/pruebas/mp-cuenta' && req.method === 'GET') return await diagnosticoCuenta(req, env, cors);
+      if (url.pathname === '/api/pruebas/huella-clave' && req.method === 'GET') return json(await huellaClavePruebas(env), 200, cors);
       const mp = url.pathname.match(/^\/api\/pruebas\/reservas\/([0-9a-f-]{36}|CC-\d{6}-[A-Z0-9]{4})$/);
       if (mp && req.method === 'GET') return await detallePrueba(mp[1], req, env, cors);
       return json({ error: 'no_encontrado' }, 404, cors);
@@ -244,6 +245,20 @@ function validarContacto(body) {
   if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new ErrorUsuario('email_invalido', 'El correo no es válido.');
   if (body.acepto !== true) throw new ErrorUsuario('condiciones', 'Tenés que aceptar las condiciones de la reserva.');
   return { nombre, telefono, email: email || null, observaciones: obs || null };
+}
+
+// Diagnóstico TEMPORAL de la clave de pruebas: solo longitud, caracteres invisibles y los primeros 10 caracteres de su
+// SHA-256 (no permiten reconstruirla). Sirve para comparar con la huella que calcula el navegador, sin mostrar la clave.
+async function huellaClavePruebas(env) {
+  const crudo = env.CLAVE_PRUEBAS == null ? null : String(env.CLAVE_PRUEBAS);
+  if (crudo === null) return { configurada: false };
+  const limpia = crudo.trim();
+  const h = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(limpia)))].map(b => b.toString(16).padStart(2, '0')).join('');
+  return {
+    configurada: true, largo: crudo.length, largo_util: limpia.length, minimo_requerido: 32,
+    bom: crudo.includes('﻿'), espacios_o_saltos: crudo !== limpia, empieza_con_prueba: limpia.startsWith('prueba-'),
+    huella_sha256: limpia.length ? h.slice(0, 10) : null
+  };
 }
 
 // Si dos pedidos con la MISMA clave de idempotencia llegan a la vez, el segundo puede ver las noches ya tomadas por el
