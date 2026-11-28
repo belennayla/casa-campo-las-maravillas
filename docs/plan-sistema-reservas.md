@@ -187,6 +187,31 @@ Smoobu tiene 14 días de prueba gratis. Smoobu figura como socio *Premier Plus* 
 5. Mercado Pago real: credenciales de producción. Requiere habilitarlo en el código, porque hoy está trabado en modo prueba.
 6. Encender `MODO_RESERVA = instantanea`, `PAGOS_HABILITADOS` y `CONFIRMACION_AUTOMATICA`.
 
+## 7 ter. Antes de activar reservas reales: tres revisiones (28/11/2026)
+
+**A. Abuso de las retenciones de 48 h con transferencia.** Propuesta, a decidir:
+1. Transferencia solo si el ingreso es dentro de **7 días o más**. Para fechas cercanas, solo Mercado Pago (30 min).
+2. **Una sola retención por transferencia a la vez para toda la casa**, y una por teléfono, correo y dispositivo.
+3. Quien deja vencer una retención por transferencia no puede volver a elegir transferencia por 30 días.
+4. Ya existe:
+   - Turnstile;
+   - límite de 5 intentos por minuto;
+   - aviso por Telegram al iniciar;
+   - cancelación desde el panel;
+   - liberación automática al vencer.
+
+**B. Confirmación automática al huésped sin WhatsApp manual.**
+- **Hoy:**
+  - el huésped vuelve de Mercado Pago a su enlace privado, que se actualiza solo y muestra la confirmación y el comprobante;
+  - además, Mercado Pago le envía su recibo de pago.
+- **Para enviar un correo propio** hay dos caminos:
+  1. Mensajes automáticos de **Smoobu** (fase 2): no requieren dominio propio. Hay que verificar en la prueba de aceptación que se envían para reservas creadas por API.
+  2. **Dominio propio** (por ejemplo, .com.ar) más un proveedor de correo transaccional con plan gratuito. Sin dominio propio los correos terminan en spam.
+- WhatsApp oficial queda para más adelante (número propio, plantillas, costo por mensaje).
+
+**C. Textos comerciales.** Ver la sección 9 y los textos del formulario en modo automático (`js/app.js`, `TEXTOS_TERMINOS`) y de `reserva.html`. Pendiente de aprobación.
+- Conviene verificar con un profesional si aplica el derecho de revocación (art. 34 de la Ley 24.240 y art. 1110 del CCyC) y el «botón de arrepentimiento» (Res. 424/2020) para reservas en línea con fecha determinada.
+
 ## 8. Decisiones de los dueños
 
 | Tema | Decisión |
