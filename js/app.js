@@ -173,10 +173,12 @@
       const inK = k => { const [a, b] = k.split('-').map(Number); return guests() >= a && guests() <= (b || a); };
       const tabla = Object.keys(t).sort((a, b) => parseInt(a) - parseInt(b)).map(k => `<li${inK(k) ? ' class="on"' : ''}><span>${k.includes('-') ? 'Hasta ' + k.split('-')[1] : k} huéspedes</span><b>${money(t[k])}</b></li>`).join('');
       const p = CASA ? pricePerNight(guests()) : null;
-      // La tarifa del grupo elegido, destacada; las demás quedan como información secundaria (desplegable).
-      q.innerHTML = `<p class="quote__empty">${st.in ? `Ingreso: <b>${fmtDate(st.in)}</b>. Elegí la fecha de salida.` : 'Elegí la fecha de ingreso y de salida para ver el precio de tu estadía.'}</p>
-        ${p != null ? `<p class="quote__grupo">Para ${guests()} ${guests() === 1 ? 'huésped' : 'huéspedes'}: <b>${money(p)}</b> por noche · casa completa</p>` : ''}
-        ${tabla ? `<details class="rates__det"><summary>Ver tarifas según cantidad de huéspedes</summary><ul class="rates">${tabla}</ul></details>` : ''}`;
+      const vacio = `<p class="quote__empty">${st.in ? `Ingreso: <b>${fmtDate(st.in)}</b>. Elegí la fecha de salida.` : 'Elegí la fecha de ingreso y de salida para ver el precio de tu estadía.'}</p>`;
+      // Modo actual (WhatsApp): exactamente como hoy. Modos nuevos: la tarifa del grupo elegido destacada y las demás en un desplegable.
+      q.innerHTML = modoWeb() === 'whatsapp'
+        ? vacio + (tabla ? `<p class="rates__t">Precio por noche · casa completa</p><ul class="rates">${tabla}</ul>` : '')
+        : vacio + (p != null ? `<p class="quote__grupo">Para ${guests()} ${guests() === 1 ? 'huésped' : 'huéspedes'}: <b>${money(p)}</b> por noche · casa completa</p>` : '')
+          + (tabla ? `<details class="rates__det"><summary>Ver tarifas según cantidad de huéspedes</summary><ul class="rates">${tabla}</ul></details>` : '');
       btn.disabled = true; return;
     }
     const n = nightsBetween(st.in, st.out), g = guests(), p = pricePerNight(g);
@@ -249,7 +251,8 @@
     if (p == null || data.total !== p * n) $('#quote-filas') && ($('#quote-filas').innerHTML = filas(data.precio_noche, n, data.total, data.sena, data.saldo));
     el.className = 'quote__srv quote__srv--ok';
     el.textContent = modoWeb() === 'instantanea' ? 'Precio y disponibilidad verificados por el sistema.'
-      : 'Precio verificado por el sistema. Te confirmamos la disponibilidad antes de pagar la seña.';
+      : modoWeb() === 'solicitud' ? 'Precio verificado por el sistema. Te confirmamos la disponibilidad antes de pagar la seña.'
+      : 'Precio verificado por el sistema. Te confirmamos la disponibilidad por WhatsApp antes de pagar la seña.';
     actualizarFormulario();
   }
 
@@ -324,7 +327,8 @@
     ul.innerHTML = TEXTOS_TERMINOS[modo] ? TEXTOS_TERMINOS[modo].map(t => `<li>${t}</li>`).join('') : terminosOriginales;
     // Resumen fijo de la estadía, con la opción de volver a cambiar fechas o huéspedes sin perder los datos cargados.
     let res = $('#form-res');
-    if (!res) {
+    if (res) res.hidden = modo === 'whatsapp';
+    if (!res && modo !== 'whatsapp') {
       res = document.createElement('div'); res.id = 'form-res'; res.className = 'form__res';
       $('h3', f).after(res);
       res.addEventListener('click', e => { if (e.target.closest('button')) { f.hidden = true; $('#reservar').scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
