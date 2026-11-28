@@ -72,7 +72,7 @@
   "api_reservas": "https://reservas-casacampo.reservas-casacampo.workers.dev",
   "cotizacion_en_linea": true,
   "solicitudes_en_linea": false,
-  "turnstile_site_key": "",
+  "turnstile_site_key": "0x4AAAAAAGWei8r_RVtyCtJk",
   "_nota_solicitudes": "Etapa 1: con solicitudes_en_linea = true (y la clave pública de Turnstile), el formulario registra la solicitud en el servidor y le da un número al huésped. WhatsApp sigue como alternativa.",
   "_nota_api": "Servidor de reservas (Cloudflare). La web solo lo usa para verificar precio y disponibilidad; no crea reservas. Poner cotizacion_en_linea en false para desconectarlo.",
   "calendario_actualizado": true,
