@@ -13,7 +13,7 @@ const OUT = path.join(ROOT, '_site');
 
 // Archivos y carpetas que forman la web pública.
 const PUBLICOS = [
-  'index.html', 'reserva.html', 'robots.txt', 'sitemap.xml', 'llms.txt',
+  'index.html', 'reserva.html', 'diagnostico.html', 'robots.txt', 'sitemap.xml', 'llms.txt',
   'css', 'js', 'img',
   'data/casa.json', 'data/ocupadas-sync.json'
 ];
@@ -37,6 +37,12 @@ for (const f of fs.readdirSync(ROOT)) {
 // Versionado de CSS y JS: las páginas piden "js/app.js?v=<huella>". Si el archivo cambia, cambia la dirección y ningún
 // navegador puede combinar una página nueva con un script viejo guardado en caché (GitHub Pages cachea 10 minutos).
 const crypto = require('crypto');
+// Número de versión visible en el diagnóstico: commit publicado + fecha y hora (UTC) del armado.
+const VERSION = `${(process.env.GITHUB_SHA || 'local').slice(0, 7)} · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+for (const rel of ['js/app.js', 'diagnostico.html']) {
+  const p = path.join(OUT, rel);
+  if (fs.existsSync(p)) fs.writeFileSync(p, fs.readFileSync(p, 'utf8').split('__VERSION_WEB__').join(VERSION));
+}
 const huella = rel => crypto.createHash('sha256').update(fs.readFileSync(path.join(OUT, rel))).digest('hex').slice(0, 10);
 for (const pagina of ['index.html', 'reserva.html']) {
   const p = path.join(OUT, pagina);

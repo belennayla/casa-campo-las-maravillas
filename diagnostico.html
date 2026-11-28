@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diagnóstico · Casa Campo Las Maravillas</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<style>
+body{font:15px/1.5 system-ui,sans-serif;margin:0;background:#f7f2e9;color:#2a2822}
+main{max-width:760px;margin:0 auto;padding:16px}
+.c{background:#fff;border-radius:12px;padding:14px 16px;box-shadow:0 1px 3px #0001;margin:12px 0}
+th{text-align:left;vertical-align:top;padding:4px 10px 4px 0;white-space:nowrap}td{padding:4px 0}
+button,a.b{font:inherit;padding:10px 14px;border-radius:10px;border:0;background:#5b6b4a;color:#fff;cursor:pointer;text-decoration:none;display:inline-block;margin:6px 6px 0 0}
+input{font:inherit;padding:8px;border:1px solid #ccc;border-radius:8px;width:100%;box-sizing:border-box}
+code{background:#f1ece2;padding:0 4px;border-radius:4px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Diagnóstico del modo prueba</h1>
+  <p>Página temporal y privada (no indexada). No muestra claves ni datos personales. Funciona aunque el navegador tenga guardada una versión vieja de la web.</p>
+  <div class="c" id="res">Revisando…</div>
+  <div class="c">
+    <p><b>¿Esta pestaña no tiene la clave?</b> Pegala acá para guardarla solo en esta pestaña (no se envía a ningún lado salvo al servidor de reservas, para verificarla):</p>
+    <input id="clave" type="password" autocomplete="off" placeholder="Clave de pruebas">
+    <button type="button" id="guardar">Guardar y volver a revisar</button>
+  </div>
+  <div class="c">
+    <a class="b" id="abrir" href="./">Abrir el modo prueba con la versión más nueva</a>
+    <button type="button" id="copiar">Copiar diagnóstico</button>
+  </div>
+</main>
+<script>
+(function () {
+  var VERSION_PUBLICADA = '__VERSION_WEB__';
+  var API = 'https://reservas-casacampo.reservas-casacampo.workers.dev';
+  var res = document.getElementById('res');
+  var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+  var clave = function () { try { return sessionStorage.getItem('cc_clave_pruebas') || ''; } catch (e) { return ''; } };
+  async function revisar() {
+    var filas = [], f = function (t, v) { filas.push('<tr><th>' + esc(t) + '</th><td>' + v + '</td></tr>'); };
+    // a) Qué página y qué app.js usaría este navegador (con su caché) frente a lo publicado ahora
+    var htmlCache = '', htmlNuevo = '', jsCache = '';
+    try { htmlCache = await (await fetch('./', { cache: 'default' })).text(); } catch (e) {}
+    try { htmlNuevo = await (await fetch('./?diag=' + Date.now(), { cache: 'no-store' })).text(); } catch (e) {}
+    var refCache = (htmlCache.match(/js\/app\.js(\?v=[0-9a-f]+)?/) || [])[0] || '(no encontrado)';
+    var refNuevo = (htmlNuevo.match(/js\/app\.js(\?v=[0-9a-f]+)?/) || [])[0] || '(no encontrado)';
+    try { jsCache = await (await fetch(refCache, { cache: 'default' })).text(); } catch (e) {}
+    var verCache = (jsCache.match(/VERSION_WEB = '([^']*)'/) || [])[1] || (jsCache.indexOf('function modoWeb') >= 0 ? 'nueva sin número' : 'ANTERIOR a la reserva automática');
+    f('Versión publicada ahora', esc(VERSION_PUBLICADA) + ' · página pide <code>' + esc(refNuevo) + '</code>');
+    f('Lo que tiene este navegador', 'página pide <code>' + esc(refCache) + '</code> · app.js versión: <b>' + esc(verCache) + '</b>');
+    f('¿Coinciden?', refCache === refNuevo && verCache === VERSION_PUBLICADA ? '✅ sí: este navegador usa la versión publicada' : '❌ NO: este navegador tiene guardada otra versión. Usá el botón «Abrir el modo prueba con la versión más nueva».');
+    // b) Clave de pruebas
+    var k = clave();
+    f('Clave en esta pestaña', k ? '✅ guardada (' + k.length + ' caracteres; no se muestra)' : '❌ no hay clave en esta pestaña');
+    try {
+      var s = await (await fetch(API + '/api/salud', { headers: k ? { 'x-clave-pruebas': k } : {}, cache: 'no-store' })).json();
+      f('Servidor', k ? (s.modo_reserva === 'instantanea' ? '✅ RECONOCE la clave: reservas de prueba autorizadas' : '❌ NO reconoce la clave (no coincide con CLAVE_PRUEBAS)') : 'sin clave para verificar');
+      f('Producción', 'modo público «' + esc(s.modo_reserva) + '» · pagos reales ' + (s.pagos_habilitados ? '❗ activados' : 'apagados') + ' · confirmación automática real ' + (s.confirmacion_automatica ? '❗ activada' : 'apagada'));
+    } catch (e) { f('Servidor', '❌ no responde: ' + esc(e.message)); }
+    // c) casa.json
+    try {
+      var casa = await (await fetch('data/casa.json', { cache: 'no-store' })).json();
+      f('casa.json', (casa.api_reservas ? '✅' : '❌') + ' api_reservas · ' + (casa.turnstile_site_key ? '✅' : '❌') + ' Turnstile · modo_reserva: ' + esc(casa.modo_reserva || '(no definido)') + ' · solicitudes_en_linea: ' + esc(casa.solicitudes_en_linea));
+    } catch (e) { f('casa.json', '❌ ' + esc(e.message)); }
+    var ss = [], ls = []; try { ss = Object.keys(sessionStorage); ls = Object.keys(localStorage); } catch (e) {}
+    f('Almacenamiento', 'sesión: ' + esc(ss.join(', ') || '(vacío)') + ' · local: ' + esc(ls.join(', ') || '(vacío)'));
+    f('Navegador', esc(navigator.userAgent.slice(0, 180)));
+    res.innerHTML = '<table>' + filas.join('') + '</table>';
+  }
+  document.getElementById('guardar').onclick = function () { var v = document.getElementById('clave').value.trim(); if (v.length >= 32) { try { sessionStorage.setItem('cc_clave_pruebas', v); } catch (e) {} } document.getElementById('clave').value = ''; revisar(); };
+  document.getElementById('abrir').onclick = function (e) { e.preventDefault(); location.href = './?v=' + Date.now() + '#prueba'; };
+  document.getElementById('copiar').onclick = async function () { try { await navigator.clipboard.writeText(res.innerText); this.textContent = '¡Copiado!'; } catch (e) {} };
+  revisar();
+})();
+</script>
+</body>
+</html>

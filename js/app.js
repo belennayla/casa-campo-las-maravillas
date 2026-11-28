@@ -2,6 +2,23 @@
    Los datos editables (precios, capacidad, fechas ocupadas) están en data/casa.json */
 (function () {
   'use strict';
+  // Versión exacta de este archivo (la completa el armado del sitio al publicar).
+  const VERSION_WEB = '__VERSION_WEB__';
+  // Diagnóstico TEMPORAL, solo en modo prueba: registra errores de JavaScript y solicitudes fallidas (sin datos sensibles).
+  const DIAG = { errores: [], fallidas: [] };
+  const ENPRUEBA = (() => { try { return location.hash.startsWith('#prueba') || !!sessionStorage.getItem('cc_clave_pruebas'); } catch { return false; } })();
+  if (ENPRUEBA) {
+    const corta = u => { try { const x = new URL(String(u && u.url || u), location.href); return x.host === location.host ? x.pathname : x.host + x.pathname; } catch { return String(u).slice(0, 60); } };
+    window.addEventListener('error', e => DIAG.errores.push(e.message === 'Script error.' && !e.filename
+      ? 'aviso dentro de un script externo (Turnstile o Google Maps; el navegador oculta el detalle; no afecta la reserva)'
+      : String(e.message || e.type).slice(0, 160) + (e.filename ? ` (${corta(e.filename)}:${e.lineno})` : '')));
+    window.addEventListener('unhandledrejection', e => DIAG.errores.push('promesa: ' + String(e.reason && e.reason.message || e.reason).slice(0, 160)));
+    const original = window.fetch.bind(window);
+    window.fetch = async (...a) => {
+      try { const r = await original(...a); if (!r.ok) DIAG.fallidas.push(`${r.status} ${corta(a[0])}`); return r; }
+      catch (err) { DIAG.fallidas.push(`sin conexión: ${corta(a[0])}`); throw err; }
+    };
+  }
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const money = n => '$' + Math.round(n).toLocaleString('es-AR');
@@ -351,11 +368,12 @@
     actualizarFormulario();
   }
   function actualizarFormulario() {
-    const f = $('#form'); if (!f || f.hidden || !st.in || !st.out) return;
-    const m = montosActuales(), modo = modoWeb(), n = nightsBetween(st.in, st.out), g = guests();
+    // El texto del botón se ajusta SIEMPRE al modo (aunque el formulario esté cerrado), para que nunca quede el de WhatsApp en modo automático.
+    const f = $('#form'); if (!f) return;
+    const hay = !!(st.in && st.out), m = hay ? montosActuales() : null, modo = modoWeb();
     const res = $('#form-res');
-    if (res) res.innerHTML = `<div><b>${fmtDate(st.in)} → ${fmtDate(st.out)}</b><span>${n} noches · ${g} ${g === 1 ? 'huésped' : 'huéspedes'}${m ? ` · Total ${money(m.total)} · Seña ${money(m.sena)}` : ''}</span></div>
-      <button type="button" class="link">Cambiar fechas o huéspedes</button>`;
+    if (res && hay) { const n = nightsBetween(st.in, st.out), g = guests(); res.innerHTML = `<div><b>${fmtDate(st.in)} → ${fmtDate(st.out)}</b><span>${n} noches · ${g} ${g === 1 ? 'huésped' : 'huéspedes'}${m ? ` · Total ${money(m.total)} · Seña ${money(m.sena)}` : ''}</span></div>
+      <button type="button" class="link">Cambiar fechas o huéspedes</button>`; }
     const boton = f.querySelector('button[type=submit]');
     if (boton.disabled) return;
     boton.textContent = modo === 'instantanea'
@@ -414,15 +432,78 @@
     if (location.hash.startsWith('#prueba') && clavePrueba() === '' && CASA && CASA.api_reservas && CASA.turnstile_site_key) {
       const k = (window.prompt('Modo prueba (solo dueños). Pegá la clave de pruebas:') || '').trim();
       if (k.length >= 32) { try { sessionStorage.setItem(CLAVE_SS, k); } catch { } }
+      else if (k) window.alert('Esa clave es demasiado corta: el modo prueba no se activó.');
     }
     if (!clavePrueba()) return;
     const b = document.createElement('div');
+    b.id = 'prueba-franja';
     b.textContent = '🧪 Modo prueba: las reservas se registran como PRUEBA y no bloquean fechas reales. ';
+    const dg = document.createElement('button'); dg.type = 'button'; dg.textContent = 'Diagnóstico'; dg.style.marginRight = '6px';
+    dg.onclick = () => { const p = document.getElementById('prueba-diag'); if (p) { p.remove(); return; } mostrarDiagnostico(); };
     const x = document.createElement('button'); x.type = 'button'; x.textContent = 'Salir';
-    x.onclick = () => { try { sessionStorage.removeItem(CLAVE_SS); } catch { } location.href = location.pathname; };
-    b.appendChild(x);
+    x.onclick = () => { try { sessionStorage.removeItem(CLAVE_SS); sessionStorage.removeItem('cc_vence_prueba'); } catch { } location.href = location.pathname; };
+    b.append(dg, x);
     b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#964d2c;color:#fff;padding:8px 12px;font:14px system-ui,sans-serif;text-align:center';
     document.body.appendChild(b);
+    actualizarFormulario(); // el formulario ya nace con el botón del recorrido automático
+  }
+
+  /* ---------- PANEL DE DIAGNÓSTICO (temporal, solo modo prueba; nunca muestra la clave ni datos personales) ---------- */
+  async function mostrarDiagnostico() {
+    const p = document.createElement('div'); p.id = 'prueba-diag';
+    p.style.cssText = 'position:fixed;left:8px;right:8px;bottom:52px;max-height:70vh;overflow:auto;z-index:9999;background:#fff;color:#222;border:2px solid #964d2c;border-radius:12px;padding:12px 14px;font:13px/1.45 system-ui,sans-serif;box-shadow:0 8px 30px #0004';
+    p.textContent = 'Revisando…'; document.body.appendChild(p);
+    const filas = [], si = (c, a, b) => (c ? '✅ ' + a : '❌ ' + b);
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const fila = (t, v) => filas.push(`<tr><th style="text-align:left;vertical-align:top;padding:3px 8px 3px 0;white-space:nowrap">${esc(t)}</th><td style="padding:3px 0">${v}</td></tr>`);
+    // 1) Versión que está ejecutando ESTE navegador y versión publicada ahora
+    const tag = document.querySelector('script[src*="js/app.js"]'), src = tag ? tag.getAttribute('src') : '(no encontrado)';
+    let publicada = null;
+    try { const html = await (await fetch('./?diag=' + Date.now(), { cache: 'no-store' })).text(); publicada = (html.match(/js\/app\.js(\?v=[0-9a-f]+)?/) || [])[0]; } catch { }
+    const entrada = tag && performance.getEntriesByName(tag.src)[0];
+    fila('Versión de app.js', `${esc(VERSION_WEB)} · cargado como <code>${esc(src)}</code>${entrada ? (entrada.transferSize === 0 ? ' · desde la caché del navegador' : ' · descargado ahora') : ''}`);
+    fila('Versión publicada', publicada ? si(publicada === src, `al día (<code>${esc(publicada)}</code>)`, `HAY UNA VERSIÓN MÁS NUEVA: <code>${esc(publicada)}</code>`) : '⚠️ no se pudo consultar');
+    // 2) Modo prueba en el navegador
+    const clave = ssGet();
+    fila('Franja «Modo prueba»', '✅ visible');
+    fila('Clave en esta pestaña', clave ? `✅ guardada (${clave.length} caracteres; no se muestra)` : '❌ no hay clave');
+    // 3) ¿El servidor reconoce la clave?
+    let servidor = '⚠️ no se pudo consultar';
+    try {
+      const r = await fetch(CASA.api_reservas.replace(/\/$/, '') + '/api/salud', { headers: { 'x-clave-pruebas': clave }, cache: 'no-store' });
+      const s = await r.json();
+      servidor = s.modo_reserva === 'instantanea' ? '✅ el servidor RECONOCE la clave (reservas de prueba autorizadas)' : `❌ el servidor NO reconoce la clave (responde modo «${esc(s.modo_reserva)}»): no coincide con CLAVE_PRUEBAS`;
+      fila('Servidor (producción)', `pagos reales ${s.pagos_habilitados ? '❗ activados' : 'apagados'} · Mercado Pago «${esc(s.modo_mercado_pago)}» · confirmación automática real ${s.confirmacion_automatica ? '❗ activada' : 'apagada'}`);
+    } catch { }
+    fila('Clave de pruebas', servidor);
+    // 4 y 5) Modo efectivo y condiciones que lo deciden
+    const modo = modoWeb();
+    fila('Modo de reserva en esta página', { instantanea: '✅ RESERVA AUTOMÁTICA (recorrido nuevo)', solicitud: '⚠️ solicitudes con aprobación', whatsapp: '❌ WhatsApp (formulario anterior)' }[modo]);
+    fila('Condiciones', [
+      si(!!(CASA && CASA.api_reservas), 'servidor configurado (api_reservas)', 'falta api_reservas en casa.json'),
+      si(!!(CASA && CASA.turnstile_site_key), 'clave pública de Turnstile', 'falta turnstile_site_key en casa.json'),
+      si(!!clavePrueba(), 'clave de pruebas activa', 'sin clave de pruebas'),
+      `casa.json: modo_reserva = ${esc(CASA && CASA.modo_reserva || '(no definido)')}, solicitudes_en_linea = ${esc(CASA && CASA.solicitudes_en_linea)}`,
+      'Regla: con api_reservas + Turnstile + clave de pruebas → reserva automática; si falta cualquiera → WhatsApp.'
+    ].join('<br>'));
+    const bt = $('#form button[type=submit]');
+    fila('Lo que se ve ahora', `botón de fechas: «${esc($('#btn-seguir').textContent)}» · botón del formulario: «${esc(bt ? bt.textContent : '')}» · ${$('#form').hidden ? 'formulario cerrado' : 'formulario abierto'}`);
+    // 6) Errores y solicitudes fallidas
+    fila('Errores de JavaScript', DIAG.errores.length ? '❌ ' + DIAG.errores.map(esc).join('<br>') : '✅ ninguno');
+    fila('Solicitudes fallidas', DIAG.fallidas.length ? '⚠️ ' + DIAG.fallidas.map(esc).join('<br>') : '✅ ninguna');
+    // 7) Almacenamiento y estado anterior
+    let ss = [], ls = [], mis = 0;
+    try { ss = Object.keys(sessionStorage); ls = Object.keys(localStorage); mis = Object.keys(JSON.parse(localStorage.getItem('cc_reservas') || '{}')).length; } catch { }
+    fila('Almacenamiento', `sesión: ${esc(ss.join(', ') || '(vacío)')} · local: ${esc(ls.join(', ') || '(vacío)')}${mis ? ` · ${mis} reserva(s) guardada(s)` : ''}`);
+    fila('Navegador', esc(navigator.userAgent.replace(/\s*\(KHTML, like Gecko\)/, '').slice(0, 160)));
+    fila('Dirección', esc(location.origin + location.pathname + location.search) + ' · ' + esc(location.hash.split('&')[0]));
+    const actualizar = publicada && publicada !== src;
+    p.innerHTML = `<b>Diagnóstico del modo prueba</b> <span style="color:#666">(no muestra claves ni datos personales)</span>
+      <table style="width:100%;border-collapse:collapse;margin-top:6px">${filas.join('')}</table>
+      <p style="margin:8px 0 0">${actualizar ? '<button type="button" id="diag-nueva">Cargar la versión nueva</button> ' : ''}<button type="button" id="diag-copiar">Copiar diagnóstico</button> <button type="button" id="diag-cerrar">Cerrar</button></p>`;
+    if (actualizar) $('#diag-nueva').onclick = () => location.replace(location.pathname + '?v=' + Date.now() + '#prueba');
+    $('#diag-copiar').onclick = async () => { try { await navigator.clipboard.writeText(p.innerText); $('#diag-copiar').textContent = '¡Copiado!'; } catch { } };
+    $('#diag-cerrar').onclick = () => p.remove();
   }
   const enLinea = () => modoWeb() !== 'whatsapp';
   let tsToken = null, tsWidget = null;
@@ -576,8 +657,10 @@
     if (data.contacto.tiktok_url) $('#tiktok').href = data.contacto.tiktok_url;
     const min = Math.min(...Object.values(data.tarifas.por_huespedes));
     $('#mbar-price').textContent = 'Desde ' + money(min);
-    renderCal(); renderGuests();
+    // El modo prueba se activa ANTES de dibujar: así el botón y la cotización ya nacen en el modo correcto
+    // (antes, la primera vez que se ingresaba la clave, se dibujaban en modo WhatsApp).
     activarModoPrueba();
+    renderCal(); renderGuests();
   }).catch(() => {
     $('#cal-months').innerHTML = '<p>No pudimos cargar el calendario. Escribinos por WhatsApp y te pasamos disponibilidad y precio.</p>';
   });
