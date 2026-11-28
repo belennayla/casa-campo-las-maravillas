@@ -278,7 +278,26 @@
   /* ---------- SOLICITUD EN LÍNEA (etapa 1) ----------
      Si está habilitada en casa.json, la solicitud se registra en el servidor (con Turnstile) y el huésped recibe
      un número. NO retiene fechas: los dueños aprueban la disponibilidad. WhatsApp sigue como alternativa. */
-  const enLinea = () => !!(CASA && CASA.solicitudes_en_linea && CASA.api_reservas && CASA.turnstile_site_key);
+  // MODO PRUEBA PRIVADO (solo dueños): abrir la web con #prueba y pegar la clave de pruebas. Las solicitudes quedan
+  // marcadas como PRUEBA y no bloquean calendarios. Sin la clave, el servidor las rechaza. Los visitantes no ven nada.
+  const CLAVE_SS = 'cc_clave_pruebas';
+  const ssGet = () => { try { return sessionStorage.getItem(CLAVE_SS) || ''; } catch { return ''; } };
+  const clavePrueba = () => (CASA && CASA.api_reservas && CASA.turnstile_site_key ? ssGet() : '');
+  function activarModoPrueba() { // se llama después de cargar casa.json
+    if (location.hash === '#prueba' && clavePrueba() === '' && CASA && CASA.api_reservas && CASA.turnstile_site_key) {
+      const k = (window.prompt('Modo prueba (solo dueños). Pegá la clave de pruebas:') || '').trim();
+      if (k.length >= 32) { try { sessionStorage.setItem(CLAVE_SS, k); } catch { } }
+    }
+    if (!clavePrueba()) return;
+    const b = document.createElement('div');
+    b.textContent = '🧪 Modo prueba: las solicitudes se registran como PRUEBA. ';
+    const x = document.createElement('button'); x.type = 'button'; x.textContent = 'Salir';
+    x.onclick = () => { try { sessionStorage.removeItem(CLAVE_SS); } catch { } location.href = location.pathname; };
+    b.appendChild(x);
+    b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#964d2c;color:#fff;padding:8px 12px;font:14px system-ui,sans-serif;text-align:center';
+    document.body.appendChild(b);
+  }
+  const enLinea = () => !!(CASA && CASA.api_reservas && CASA.turnstile_site_key && (CASA.solicitudes_en_linea || clavePrueba()));
   let tsToken = null, tsWidget = null;
   function prepararTurnstile() {
     if (!enLinea() || tsWidget !== null) return;
@@ -296,7 +315,7 @@
     try {
       const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 12000);
       const r = await fetch(CASA.api_reservas.replace(/\/$/, '') + '/api/solicitudes', {
-        method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
+        method: 'POST', headers: { 'content-type': 'application/json', ...(clavePrueba() ? { 'x-clave-pruebas': clavePrueba() } : {}) }, signal: ctl.signal,
         body: JSON.stringify({ ingreso: st.in, salida: st.out, adultos: st.adultos, menores: st.menores, ...datos, acepto: true, turnstile: tsToken })
       });
       clearTimeout(to);
@@ -418,6 +437,7 @@
     const min = Math.min(...Object.values(data.tarifas.por_huespedes));
     $('#mbar-price').textContent = 'Desde ' + money(min);
     renderCal(); renderGuests();
+    activarModoPrueba();
   }).catch(() => {
     $('#cal-months').innerHTML = '<p>No pudimos cargar el calendario. Escribinos por WhatsApp y te pasamos disponibilidad y precio.</p>';
   });

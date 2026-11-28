@@ -80,7 +80,7 @@ function json(data, status, headers) {
 function corsHeaders(req, env) {
   const origen = req.headers.get('origin');
   const permitidos = (env.ORIGENES_PERMITIDOS || '').split(',').map(s => s.trim());
-  const h = { 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'content-type, idempotency-key', 'access-control-max-age': '86400', 'vary': 'origin' };
+  const h = { 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'content-type, idempotency-key, x-clave-pruebas', 'access-control-max-age': '86400', 'vary': 'origin' };
   if (origen && permitidos.includes(origen)) h['access-control-allow-origin'] = origen;
   return h;
 }
@@ -875,7 +875,7 @@ async function notificarSolicitud(env, id) {
     if (!s || s.aviso_enviado) return;
     const panel = (env.PANEL_URL || '').trim();
     const texto = [
-      `🏡 Nueva solicitud ${s.numero}`,
+      s.origen === 'prueba' ? `🧪 PRUEBA · Nueva solicitud ${s.numero} (no es un huésped real)` : `🏡 Nueva solicitud ${s.numero}`,
       `${fmtFecha(s.ingreso)} → ${fmtFecha(s.salida)} · ${s.noches} noches · ${s.huespedes} huéspedes`,
       `Total ${fmtPesos(s.total)} · seña ${fmtPesos(s.sena)}`,
       `${s.nombre} · ${s.telefono}${s.email ? ' · ' + s.email : ''}`,
@@ -1147,7 +1147,7 @@ async function cargar() {
   document.getElementById('info').textContent = 'Ingresaste como ' + d.usuario + ' · Pagos online: ' + (d.pagos_habilitados ? 'activados' : 'desactivados');
   document.getElementById('tg').hidden = false;
   document.getElementById('tg-estado').textContent = d.telegram_configurado ? 'configurados' : 'sin configurar';
-  document.getElementById('lista').innerHTML = d.solicitudes.map(s => '<div class="s" data-id="' + s.id + '"><span class="e ' + s.estado + '">' + s.estado + '</span> <b>' + esc(s.numero) + '</b> · ' + f(s.ingreso) + ' → ' + f(s.salida) + ' · ' + s.noches + ' noches · ' + s.huespedes + ' huéspedes · total ' + p(s.total) + ' · seña ' + p(s.sena) +
+  document.getElementById('lista').innerHTML = d.solicitudes.map(s => '<div class="s" data-id="' + s.id + '"><span class="e ' + s.estado + '">' + s.estado + '</span> ' + (s.origen === 'prueba' ? '<span class="e">🧪 prueba</span> ' : '') + '<b>' + esc(s.numero) + '</b> · ' + f(s.ingreso) + ' → ' + f(s.salida) + ' · ' + s.noches + ' noches · ' + s.huespedes + ' huéspedes · total ' + p(s.total) + ' · seña ' + p(s.sena) +
     '<div>' + esc(s.nombre) + ' · <a href="https://wa.me/' + esc(String(s.telefono).replace(/\\D/g, '')) + '" target="_blank" rel="noopener">' + esc(s.telefono) + '</a>' + (s.email ? ' · ' + esc(s.email) : '') + '</div>' +
     (s.observaciones ? '<div class="m">Nota: ' + esc(s.observaciones) + '</div>' : '') +
     (s.retencion_vence ? '<div class="m">Fechas retenidas hasta ' + new Date(s.retencion_vence).toLocaleString('es-AR') + '</div>' : '') +

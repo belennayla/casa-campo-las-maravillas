@@ -19,7 +19,7 @@ for (const [nombre, archivo] of baterias) {
   execSync(`npx.cmd wrangler d1 migrations apply reservas --local --persist-to "${PERSIST}"`, { stdio: 'ignore' });
   const publico = iniciar(['wrangler', 'dev', '--local', '--test-scheduled', '--port', '8787', '--inspector-port', '9229', '--persist-to', `"${PERSIST}"`,
     '--var', 'MP_API_BASE:http://127.0.0.1:8790', '--var', 'ORDEN_MIN_SEGUNDOS:3', '--var', 'MP_GRACIA_SEG:0',
-    '--var', 'TURNSTILE_API_BASE:http://127.0.0.1:8790', '--var', 'TELEGRAM_API_BASE:http://127.0.0.1:8790', ...(nombre === 'solicitudes' ? ['--var', 'SOLICITUDES_HABILITADAS:true'] : [])]);
+    '--var', 'TURNSTILE_API_BASE:http://127.0.0.1:8790', '--var', 'TURNSTILE_HOSTNAMES:localhost','--var', 'TELEGRAM_API_BASE:http://127.0.0.1:8790', ...(nombre === 'solicitudes' ? ['--var', 'SOLICITUDES_HABILITADAS:true'] : [])]);
   await listo('http://127.0.0.1:8787/api/salud'); // primero el público, después el panel
   const panel = iniciar(['wrangler', 'dev', '-c', 'wrangler.panel.toml', '--local', '--port', '8788', '--inspector-port', '9230', '--persist-to', `"${PERSIST}"`,
     '--var', 'ACCESS_TEAM_DOMAIN:equipo-prueba.cloudflareaccess.com', '--var', 'ACCESS_AUD:aud-de-prueba', '--var', 'ACCESS_CERTS_URL:http://127.0.0.1:8790/certs', '--var', 'TELEGRAM_API_BASE:http://127.0.0.1:8790']);
