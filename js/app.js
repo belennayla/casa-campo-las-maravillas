@@ -372,6 +372,7 @@
     const err = $('#form-err'), boton = f.querySelector('button[type=submit]');
     if (!tsToken) { err.textContent = 'Completá la verificación de seguridad (el recuadro de arriba).'; return; }
     const cuerpo = { ingreso: st.in, salida: st.out, adultos: st.adultos, menores: st.menores, ...datos, medio_pago: medioElegido(), acepto: true };
+    if (clavePrueba()) { try { const v = Number(sessionStorage.getItem('cc_vence_prueba')); if (v) cuerpo.vence_en_segundos = v; } catch { } }
     const huella = JSON.stringify({ ...cuerpo });
     if (huella !== idemDatos) { idemDatos = huella; idemClave = crypto.randomUUID(); } // reintento tras un corte: misma clave, misma reserva
     boton.disabled = true; boton.textContent = 'Reservando tus fechas…'; err.textContent = '';
@@ -407,7 +408,10 @@
   const ssGet = () => { try { return sessionStorage.getItem(CLAVE_SS) || ''; } catch { return ''; } };
   const clavePrueba = () => (CASA && CASA.api_reservas && CASA.turnstile_site_key ? ssGet() : '');
   function activarModoPrueba() { // se llama después de cargar casa.json
-    if (location.hash === '#prueba' && clavePrueba() === '' && CASA && CASA.api_reservas && CASA.turnstile_site_key) {
+    // Solo modo prueba: "#prueba&vence=120" acorta la retención (5 a 600 s) para probar vencimientos. El servidor lo ignora sin la clave.
+    const v = Number((location.hash.match(/[#&]vence=(\d+)/) || [])[1]);
+    try { if (v >= 5 && v <= 600) sessionStorage.setItem('cc_vence_prueba', String(v)); else if (location.hash.startsWith('#prueba')) sessionStorage.removeItem('cc_vence_prueba'); } catch { }
+    if (location.hash.startsWith('#prueba') && clavePrueba() === '' && CASA && CASA.api_reservas && CASA.turnstile_site_key) {
       const k = (window.prompt('Modo prueba (solo dueños). Pegá la clave de pruebas:') || '').trim();
       if (k.length >= 32) { try { sessionStorage.setItem(CLAVE_SS, k); } catch { } }
     }

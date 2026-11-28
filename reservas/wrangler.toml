@@ -53,7 +53,8 @@ PANEL_URL ="https://panel-casacampo.reservas-casacampo.workers.dev"
 MODO_RESERVA = "whatsapp"
 # ical = sin gestor de canales (NUNCA permite confirmar solo) · smoobu = gestor de canales (fase 2)
 PROVEEDOR_DISPONIBILIDAD = "ical"
-CONFIRMACION_AUTOMATICA_PRUEBAS = "false"
+# Solo reservas de PRUEBA (validadas con CLAVE_PRUEBAS): usan un proveedor simulado y nunca bloquean fechas reales.
+CONFIRMACION_AUTOMATICA_PRUEBAS = "true"
 RETENCION_MP_MINUTOS = "30"
 ORDEN_MARGEN_MIN = "5"
 RETENCION_TRANSFERENCIA_HORAS = "48"
