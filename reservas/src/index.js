@@ -862,9 +862,8 @@ async function enviarTelegram(env, texto) {
 }
 
 async function avisoTelegramPrueba(env, quien) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
-    return { ok: false, motivo: 'Faltan los secretos TELEGRAM_BOT_TOKEN y/o TELEGRAM_CHAT_ID en este Worker.' };
-  }
+  const faltan = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'].filter(n => !String(env[n] || '').trim());
+  if (faltan.length) return { ok: false, motivo: `Falta o está vacío en este Worker: ${faltan.join(' y ')}.` };
   const hora = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
   const r = await enviarTelegram(env, `✅ Aviso de prueba del panel de Casa Campo Las Maravillas.\nEnviado por ${quien} el ${hora}.\nAsí van a llegar las nuevas solicitudes de reserva.`);
   return r.ok ? { ok: true } : { ok: false, motivo: 'Telegram respondió: ' + r.motivo };
@@ -1022,7 +1021,7 @@ export async function apiAdmin(req, env, ctx, url) {
       : env.DB.prepare("SELECT * FROM solicitudes ORDER BY CASE estado WHEN 'nueva' THEN 0 WHEN 'aprobada' THEN 1 ELSE 2 END, creada DESC LIMIT 200");
     const { results } = await q.all();
     return json({ usuario: quien, solicitudes: results, pagos_habilitados: env.PAGOS_HABILITADOS === 'true',
-      telegram_configurado: !!(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) }, 200, sinCache);
+      telegram_configurado: !!(String(env.TELEGRAM_BOT_TOKEN || '').trim() && String(env.TELEGRAM_CHAT_ID || '').trim()) }, 200, sinCache);
   }
   if (url.pathname === '/api/admin/telegram/prueba' && req.method === 'POST') return json(await avisoTelegramPrueba(env, quien), 200, sinCache);
   const m = url.pathname.match(/^\/api\/admin\/solicitudes\/([0-9a-f-]{36})\/(aprobar|rechazar|revisar)$/);
