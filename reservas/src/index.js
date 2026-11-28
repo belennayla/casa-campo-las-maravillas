@@ -824,9 +824,13 @@ async function verificarTurnstile(env, token, ip) {
   try {
     const r = await fetch((env.TURNSTILE_API_BASE || 'https://challenges.cloudflare.com') + '/turnstile/v0/siteverify', { method: 'POST', body: fd });
     const d = await r.json();
-    if (!d.success) return { ok: false, motivo: (d['error-codes'] || []).join(',') || 'rechazado' };
+    if (!d.success) {
+      // Solo el código de error de Cloudflare (p. ej. invalid-input-secret = secreto mal cargado). Nunca el secreto ni el token.
+      console.warn('Turnstile rechazó la verificación:', (d['error-codes'] || []).join(',') || 'sin código');
+      return { ok: false, motivo: (d['error-codes'] || []).join(',') || 'rechazado' };
+    }
     const hosts = (env.TURNSTILE_HOSTNAMES || '').split(',').map(s => s.trim()).filter(Boolean);
-    if (hosts.length && d.hostname && !hosts.includes(d.hostname)) return { ok: false, motivo: 'hostname_no_permitido' };
+    if (hosts.length && d.hostname && !hosts.includes(d.hostname)) { console.warn('Turnstile: hostname no permitido', d.hostname); return { ok: false, motivo: 'hostname_no_permitido' }; }
     return { ok: true };
   } catch (e) {
     return { ok: false, motivo: 'turnstile_sin_respuesta' };
