@@ -375,7 +375,7 @@
     if (res && hay) { const n = nightsBetween(st.in, st.out), g = guests(); res.innerHTML = `<div><b>${fmtDate(st.in)} → ${fmtDate(st.out)}</b><span>${n} noches · ${g} ${g === 1 ? 'huésped' : 'huéspedes'}${m ? ` · Total ${money(m.total)} · Seña ${money(m.sena)}` : ''}</span></div>
       <button type="button" class="link">Cambiar fechas o huéspedes</button>`; }
     const boton = f.querySelector('button[type=submit]');
-    if (boton.disabled) return;
+    if (boton.dataset.enviando) return;
     boton.textContent = modo === 'instantanea'
       ? (medioElegido() === 'transferencia' ? `Reservar y pagar por transferencia${m ? ` (seña ${money(m.sena)})` : ''}` : `Pagar la seña${m ? ` de ${money(m.sena)}` : ''} con Mercado Pago`)
       : modo === 'solicitud' ? 'Enviar solicitud (sin pagar)' : 'Preparar mensaje de WhatsApp';
@@ -393,7 +393,7 @@
     if (clavePrueba()) { try { const v = Number(sessionStorage.getItem('cc_vence_prueba')); if (v) cuerpo.vence_en_segundos = v; } catch { } }
     const huella = JSON.stringify({ ...cuerpo });
     if (huella !== idemDatos) { idemDatos = huella; idemClave = crypto.randomUUID(); } // reintento tras un corte: misma clave, misma reserva
-    boton.disabled = true; boton.textContent = 'Reservando tus fechas…'; err.textContent = '';
+    boton.disabled = true; boton.dataset.enviando = '1'; boton.textContent = 'Reservando tus fechas…'; err.textContent = '';
     let d = null, status = 0;
     try {
       const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 20000);
@@ -409,8 +409,8 @@
       location.href = 'reserva.html#t=' + encodeURIComponent(d.acceso);
       return;
     }
-    tsToken = null; if (window.turnstile && typeof tsWidget === 'string' && tsWidget !== 'cargando') window.turnstile.reset(tsWidget);
-    boton.disabled = false; actualizarFormulario();
+    // El token de Turnstile es de un solo uso: se renueva el desafío y el botón espera la nueva verificación. Los datos quedan.
+    delete boton.dataset.enviando; reintentarTurnstile(); actualizarFormulario();
     if (status !== 0) idemDatos = null; // respuesta definitiva: el próximo intento es una reserva nueva
     if (status === 409) { SRV = null; err.textContent = (d && d.mensaje) || 'Esas fechas ya no están disponibles. Elegí otras fechas.'; return; }
     err.textContent = status === 0 ? 'No pudimos conectarnos. Revisá tu conexión y probá de nuevo: si la reserva se había creado, no se duplica.'
@@ -488,6 +488,12 @@
     ].join('<br>'));
     const bt = $('#form button[type=submit]');
     fila('Lo que se ve ahora', `botón de fechas: «${esc($('#btn-seguir').textContent)}» · botón del formulario: «${esc(bt ? bt.textContent : '')}» · ${$('#form').hidden ? 'formulario cerrado' : 'formulario abierto'}`);
+    // Turnstile: estado del widget en esta página y validez del secreto en el servidor (sin mostrar tokens ni claves)
+    fila('Turnstile (esta página)', tsWidget === null ? 'sin cargar todavía (se carga al abrir el formulario)' : `${tsToken ? '✅ verificación completa' : '⏳ esperando verificación'}${tsEstado && tsEstado !== 'ok' ? ' · último evento: ' + esc(tsEstado) : ''}`);
+    try {
+      const t = await (await fetch(CASA.api_reservas.replace(/\/$/, '') + '/api/pruebas/turnstile', { cache: 'no-store' })).json();
+      fila('Turnstile (servidor)', !t.configurado ? '❌ TURNSTILE_SECRET no está cargado' : t.secreto_valido ? `✅ Cloudflare acepta el secreto (${t.largo} caracteres)` : `❌ Cloudflare RECHAZA el secreto: ${esc((t.cloudflare || []).join(', '))} (${t.largo} caracteres${t.empieza_con_0x ? '' : ', no empieza con 0x'}${t.espacios_o_saltos ? ', con espacios o saltos' : ''})`);
+    } catch { }
     // 6) Errores y solicitudes fallidas
     fila('Errores de JavaScript', DIAG.errores.length ? '❌ ' + DIAG.errores.map(esc).join('<br>') : '✅ ninguno');
     fila('Solicitudes fallidas', DIAG.fallidas.length ? '⚠️ ' + DIAG.fallidas.map(esc).join('<br>') : '✅ ninguna');
@@ -507,15 +513,36 @@
   }
   const enLinea = () => modoWeb() !== 'whatsapp';
   let tsToken = null, tsWidget = null;
+  // Turnstile: éxito, error, expiración y tiempo agotado. Mientras no haya un token válido, el botón de pago no avanza.
+  // Si algo falla, "Reintentar verificación" renueva el desafío SIN borrar los datos cargados.
+  let tsEstado = '';
+  const tsMsg = t => { let m = $('#ts-msg'); if (!m) { m = document.createElement('p'); m.id = 'ts-msg'; m.className = 'form__err'; m.setAttribute('role', 'status'); $('#ts').after(m); } m.innerHTML = t || ''; };
+  function reintentarTurnstile() { tsToken = null; tsMsg(''); if (window.turnstile && typeof tsWidget === 'string' && tsWidget !== 'cargando') window.turnstile.reset(tsWidget); bloquearPago(); }
+  function bloquearPago() {
+    const b = $('#form button[type=submit]'); if (!b || !enLinea() || tsWidget === null) return;
+    b.disabled = !tsToken; b.style.opacity = tsToken ? '' : '.55';
+    if (!tsToken) b.title = 'Completá la verificación de seguridad'; else b.removeAttribute('title');
+  }
+  document.addEventListener('click', e => { if (e.target && e.target.id === 'ts-reintentar') reintentarTurnstile(); });
   function prepararTurnstile() {
     if (!enLinea() || tsWidget !== null) return;
     const cont = $('#ts'); cont.hidden = false;
-    const render = () => { tsWidget = window.turnstile.render(cont, { sitekey: CASA.turnstile_site_key, language: 'es', callback: t => { tsToken = t; }, 'expired-callback': () => { tsToken = null; } }); };
+    const conReintento = t => tsMsg(t + ' <button type="button" class="link" id="ts-reintentar">Reintentar verificación</button>');
+    const render = () => {
+      tsWidget = window.turnstile.render(cont, {
+        sitekey: CASA.turnstile_site_key, language: 'es', retry: 'auto', 'refresh-expired': 'auto',
+        callback: t => { tsToken = t; tsEstado = 'ok'; tsMsg(''); bloquearPago(); },
+        'expired-callback': () => { tsToken = null; tsEstado = 'expirado'; bloquearPago(); conReintento('La verificación venció.'); },
+        'timeout-callback': () => { tsToken = null; tsEstado = 'tiempo'; bloquearPago(); conReintento('La verificación tardó demasiado.'); },
+        'error-callback': codigo => { tsToken = null; tsEstado = 'error ' + codigo; bloquearPago(); DIAG.errores.push('Turnstile error-callback: ' + codigo); conReintento(`No se pudo completar la verificación (código ${String(codigo).replace(/[^\w-]/g, '')}).`); return true; }
+      });
+      bloquearPago();
+    };
     if (window.turnstile) return render();
     tsWidget = 'cargando';
     const s = document.createElement('script');
     s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'; s.async = true;
-    s.onload = render; s.onerror = () => { tsWidget = null; cont.hidden = true; };
+    s.onload = render; s.onerror = () => { tsWidget = null; cont.hidden = true; tsMsg('No se pudo cargar la verificación de seguridad. Revisá tu conexión o escribinos por WhatsApp.'); };
     document.head.appendChild(s);
   }
   async function enviarSolicitud(datos) {

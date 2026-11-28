@@ -78,11 +78,13 @@ if (ESC === 'produccion') {
   ok(saludP.modo_reserva === 'instantanea', 'con la clave de pruebas, la web privada usa el recorrido automático');
   r = await reservar(F, { conClave: false }); ok(r.status === 403 && r.error === 'no_habilitado', 'reserva pública: cerrada (403)');
   r = await reservar(F); ok(r.status === 201 && /^CC-\d{6}-[A-Z0-9]{4}$/.test(r.numero) && r.acceso && r.pago && r.pago.checkout_url, `reserva de prueba: número ${r.numero}, enlace privado y botón de pago`);
+  // Configuración autorizada: confirmación automática SOLO para reservas de prueba (proveedor simulado); para huéspedes reales, apagada.
   const tg0 = (await telegram()).length;
   let d = await pagar(r.numero, APROBADO);
-  ok(d.estado === 'pago_verificado' && d.excepcion === 'confirmacion_manual', 'seña acreditada → NO se confirma sola (confirmación automática apagada) y queda para el panel');
-  ok((await nuevosTg(tg0)).some(t => /confirmación automática está apagada/.test(t)), 'aviso por Telegram a los dueños');
-  const v = await mi(r.acceso); ok(v.estado === 'pago_verificado' && v.en_revision === true && !v.confirmacion, 'el huésped ve "seña recibida, terminando verificaciones" (nunca "confirmada")');
+  ok(d.estado === 'confirmada' && d.confirmada_por === 'automatica' && d.cm_proveedor === 'simulado', 'reserva de PRUEBA: seña acreditada → confirmada automáticamente (proveedor simulado, sin tocar Booking/Airbnb)');
+  ok((await nuevosTg(tg0)).some(t => /PRUEBA/.test(t) && /CONFIRMADA automáticamente/.test(t)), 'aviso por Telegram marcado como PRUEBA');
+  const v = await mi(r.acceso); ok(v.estado === 'confirmada' && v.confirmacion && v.prueba === true, 'el huésped ve la confirmación y el comprobante, identificada como prueba');
+  ok(salud.confirmacion_automatica === false, 'para huéspedes reales la confirmación automática sigue apagada');
   const clave = crypto.randomUUID(), G = fechas(3);
   const tres = await Promise.all([1, 2, 3].map(() => reservar(G, { clave })));
   ok(tres.every(x => x.status === 200 || x.status === 201) && new Set(tres.map(x => x.numero)).size === 1, `misma reserva enviada 3 veces a la vez: una sola reserva (${tres.map(x => x.status).join(', ')})`);

@@ -64,6 +64,7 @@ export default {
       if (cal && req.method === 'GET') return await calendarioExportado(env, cal[1]);
       if (url.pathname === '/api/pruebas/mp-cuenta' && req.method === 'GET') return await diagnosticoCuenta(req, env, cors);
       if (url.pathname === '/api/pruebas/huella-clave' && req.method === 'GET') return json(await huellaClavePruebas(env), 200, cors);
+      if (url.pathname === '/api/pruebas/turnstile' && req.method === 'GET') return json(await diagnosticoTurnstile(env), 200, cors);
       const mp = url.pathname.match(/^\/api\/pruebas\/reservas\/([0-9a-f-]{36}|CC-\d{6}-[A-Z0-9]{4})$/);
       if (mp && req.method === 'GET') return await detallePrueba(mp[1], req, env, cors);
       return json({ error: 'no_encontrado' }, 404, cors);
@@ -260,6 +261,24 @@ async function huellaClavePruebas(env) {
     huella_sha256: limpia.length ? h.slice(0, 10) : null
   };
 }
+
+// Diagnóstico TEMPORAL del secreto de Turnstile: le pregunta a Cloudflare con un token ficticio. Si responde
+// "invalid-input-response", el SECRETO es válido (lo único inválido es el token ficticio). "invalid-input-secret" = secreto mal cargado.
+// Nunca devuelve el secreto: solo su longitud, formato y el código que responde Cloudflare.
+async function diagnosticoTurnstile(env) {
+  const crudo = env.TURNSTILE_SECRET == null ? null : String(env.TURNSTILE_SECRET);
+  if (crudo === null) return { configurado: false };
+  const limpio = crudo.trim(), fd = new FormData();
+  fd.append('secret', limpio); fd.append('response', 'diagnostico-token-ficticio');
+  let codigos = null;
+  try { const d = await (await fetch((env.TURNSTILE_API_BASE || 'https://challenges.cloudflare.com') + '/turnstile/v0/siteverify', { method: 'POST', body: fd })).json(); codigos = d['error-codes'] || []; } catch { codigos = ['sin_respuesta']; }
+  return {
+    configurado: true, largo: crudo.length, largo_util: limpio.length, empieza_con_0x: limpio.startsWith('0x'),
+    bom: crudo.includes('﻿'), espacios_o_saltos: crudo !== limpio, hostnames: env.TURNSTILE_HOSTNAMES || '',
+    cloudflare: codigos, secreto_valido: codigos.includes('invalid-input-response') && !codigos.includes('invalid-input-secret')
+  };
+}
+const ERRORES_CONFIG_TURNSTILE = /invalid-input-secret|missing-input-secret|turnstile_sin_configurar/;
 
 // Si dos pedidos con la MISMA clave de idempotencia llegan a la vez, el segundo puede ver las noches ya tomadas por el
 // primero antes de que su registro sea visible: se espera un instante y se devuelve la misma reserva en lugar de "ocupado".
@@ -858,6 +877,7 @@ async function crearSolicitud(req, env, ctx, cors) {
   if (env.SOLICITUDES_HABILITADAS !== 'true' && !esPrueba) throw new ErrorUsuario('no_habilitado', 'Por ahora las solicitudes se reciben por WhatsApp.', 403);
   const body = await leerJson(req);
   const ts = await verificarTurnstile(env, body.turnstile, req.headers.get('cf-connecting-ip'));
+  if (!ts.ok && ERRORES_CONFIG_TURNSTILE.test(ts.motivo)) throw new ErrorUsuario('verificacion_no_disponible', 'No pudimos completar la verificación por un problema técnico de nuestro lado. Probá más tarde o escribinos por WhatsApp.', 503);
   if (!ts.ok) throw new ErrorUsuario('verificacion_fallida', 'No pudimos verificar que no seas un robot. Probá de nuevo o escribinos por WhatsApp.', 403);
   const casa = await datosCasa(env);
   const e = validarEstadia(body, casa);

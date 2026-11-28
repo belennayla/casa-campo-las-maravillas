@@ -65,7 +65,11 @@ export async function iniciarReserva(req, env, ctx, cors) {
   if (previa) return await respuestaInicio(env, previa.reserva_id, cors, 200);
 
   const ts = await verificarTurnstile(env, body.turnstile, req.headers.get('cf-connecting-ip'));
-  if (!ts.ok) throw new ErrorUsuario('verificacion_fallida', 'No pudimos verificar que no seas un robot. Probá de nuevo.', 403);
+  // Un secreto mal configurado NO es culpa del visitante: se informa distinto (y queda en el registro con el código de Cloudflare).
+  if (!ts.ok && /invalid-input-secret|missing-input-secret|turnstile_sin_configurar/.test(ts.motivo)) {
+    throw new ErrorUsuario('verificacion_no_disponible', 'No pudimos completar la verificación por un problema técnico de nuestro lado. Probá más tarde o escribinos por WhatsApp.', 503);
+  }
+  if (!ts.ok) throw new ErrorUsuario('verificacion_fallida', 'No pudimos verificar que no seas un robot. Tocá «Reintentar verificación» y probá de nuevo.', 403);
   const casa = await datosCasa(env);
   const e = validarEstadia(body, casa);
   const c = validarContacto(body);

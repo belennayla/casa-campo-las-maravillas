@@ -67,6 +67,11 @@ code{background:#f1ece2;padding:0 4px;border-radius:4px}
       f('Servidor', k ? (s.modo_reserva === 'instantanea' ? '✅ RECONOCE la clave: reservas de prueba autorizadas' : '❌ NO reconoce la clave (no coincide con CLAVE_PRUEBAS)') : 'sin clave para verificar');
       f('Producción', 'modo público «' + esc(s.modo_reserva) + '» · pagos reales ' + (s.pagos_habilitados ? '❗ activados' : 'apagados') + ' · confirmación automática real ' + (s.confirmacion_automatica ? '❗ activada' : 'apagada'));
     } catch (e) { f('Servidor', '❌ no responde: ' + esc(e.message)); }
+    // Turnstile: ¿Cloudflare acepta el secreto cargado en el servidor? (no se muestra)
+    try {
+      var t = await (await fetch(API + '/api/pruebas/turnstile', { cache: 'no-store' })).json();
+      f('Turnstile (servidor)', !t.configurado ? '❌ TURNSTILE_SECRET no está cargado' : t.secreto_valido ? '✅ Cloudflare acepta el secreto (' + t.largo + ' caracteres)' : '❌ Cloudflare RECHAZA el secreto: ' + esc((t.cloudflare || []).join(', ')) + ' (' + t.largo + ' caracteres' + (t.empieza_con_0x ? '' : ', no empieza con 0x') + (t.espacios_o_saltos ? ', con espacios o saltos' : '') + ')');
+    } catch (e) {}
     // c) casa.json
     try {
       var casa = await (await fetch('data/casa.json', { cache: 'no-store' })).json();
