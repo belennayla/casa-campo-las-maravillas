@@ -34,6 +34,19 @@ for (const f of fs.readdirSync(ROOT)) {
   if (PATRONES.some(p => p.test(f))) { fs.copyFileSync(path.join(ROOT, f), path.join(OUT, f)); copiados.push(f); }
 }
 
+// Versionado de CSS y JS: las páginas piden "js/app.js?v=<huella>". Si el archivo cambia, cambia la dirección y ningún
+// navegador puede combinar una página nueva con un script viejo guardado en caché (GitHub Pages cachea 10 minutos).
+const crypto = require('crypto');
+const huella = rel => crypto.createHash('sha256').update(fs.readFileSync(path.join(OUT, rel))).digest('hex').slice(0, 10);
+for (const pagina of ['index.html', 'reserva.html']) {
+  const p = path.join(OUT, pagina);
+  if (!fs.existsSync(p)) continue;
+  let html = fs.readFileSync(p, 'utf8');
+  html = html.replace(/(src|href)="((?:js|css)\/[a-z0-9-]+\.(?:js|css))"/g, (m, attr, rel) =>
+    fs.existsSync(path.join(OUT, rel)) ? `${attr}="${rel}?v=${huella(rel)}"` : m);
+  fs.writeFileSync(p, html);
+}
+
 // Control de seguridad: nada interno puede quedar dentro de _site.
 const PROHIBIDOS = [/^reservas(\/|$)/, /^scripts(\/|$)/, /^\.github/, /^\.git(\/|$)/, /\.dev\.vars/, /node_modules/, /^INSTRUCTIVO\.md$/, /^servidor\.js$/, /wrangler\.toml$/, /\.wrangler/];
 const todos = [];
