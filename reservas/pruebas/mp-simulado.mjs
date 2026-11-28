@@ -2,6 +2,10 @@
 // Imita: GET /users/me, POST /v1/orders (con X-Idempotency-Key), GET /v1/orders/:id, POST /v1/orders/:id/cancel.
 // Rutas de control para las pruebas: /__control/*
 import http from 'node:http';
+import crypto from 'node:crypto';
+// Credenciales del Smoobu simulado (solo pruebas locales; las mismas que pasa correr-todo.mjs al Worker).
+export const SM_CLAVE = 'clave-smoobu-simulada', SM_SECRETO = 'secreto-smoobu-simulado-0123456789', SM_APT = 501;
+const sm = { reservas: [], ultimo: 9000, llamadas: 0, nonces: new Set(), caido: false, fallar: 0, perderRespuesta: 0 };
 
 const ordenes = new Map();     // id -> orden
 const porClave = new Map();    // idempotency key -> { id, cuerpo }
@@ -53,6 +57,54 @@ http.createServer(async (req, res) => {
   // --- Claves públicas de Cloudflare Access simuladas (JWKS) ---
   if (url.pathname === '/__control/jwks' && req.method === 'POST') { jwks = JSON.parse(cuerpo); return responder(res, 200, { ok: true }); }
   if (url.pathname === '/certs') return responder(res, 200, jwks);
+
+  // --- Gestor de canales SIMULADO (imita la API de Smoobu: https://docs.smoobu.com, autenticación HMAC) ---
+  if (url.pathname === '/__control/smoobu') {
+    if (req.method === 'POST') {
+      const c = JSON.parse(cuerpo || '{}');
+      if (c.reset) { sm.reservas = []; sm.llamadas = 0; sm.nonces.clear(); sm.caido = false; sm.fallar = 0; sm.perderRespuesta = 0; sm.fallarPost = 0; }
+      for (const k of ['caido', 'fallar', 'perderRespuesta', 'fallarPost']) if (k in c) sm[k] = c[k];
+      if (c.externa) sm.reservas.push({ id: ++sm.ultimo, arrival: c.externa.arrival, departure: c.externa.departure, type: 'reservation', channel: { id: 74, name: c.externa.canal || 'Airbnb' }, apartment: { id: SM_APT }, notice: '' });
+    }
+    return responder(res, 200, { llamadas: sm.llamadas, caido: sm.caido, reservas: sm.reservas });
+  }
+  if (url.pathname.startsWith('/api/reservations')) {
+    sm.llamadas++;
+    // Firma HMAC: METHOD\nPATH\nQUERY_ORDENADA\nTIMESTAMP\nNONCE\nSHA256(BODY)\nAPI_KEY
+    const h = req.headers, q = [...url.searchParams.entries()].sort((a, b) => a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : (a[0] < b[0] ? -1 : 1))
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+    const canon = [req.method, url.pathname, q, h['x-timestamp'], h['x-nonce'], crypto.createHash('sha256').update(cuerpo).digest('hex'), h['x-api-key']].join('\n');
+    const esperada = crypto.createHmac('sha256', SM_SECRETO).update(canon).digest('base64');
+    if (h['x-api-key'] !== SM_CLAVE || h['x-signature'] !== esperada || !h['x-nonce'] || sm.nonces.has(h['x-nonce']) || Math.abs(Date.now() - Date.parse(h['x-timestamp'])) > 300e3) {
+      return responder(res, 401, { status: 401, title: 'Unauthorized', detail: 'Authentication required' });
+    }
+    sm.nonces.add(h['x-nonce']);
+    if (sm.caido) return responder(res, 503, { status: 503, title: 'Service Unavailable' });
+    if (sm.fallar > 0) { sm.fallar--; return responder(res, 500, { status: 500, title: 'Internal Server Error' }); }
+    const activas = () => sm.reservas.filter(b => b.type !== 'cancellation');
+    if (url.pathname === '/api/reservations' && req.method === 'GET') {
+      const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+      const bookings = sm.reservas.filter(b => b.arrival < to && b.departure > from);
+      return responder(res, 200, { page_count: 1, page_size: 100, total_items: bookings.length, page: 1, bookings });
+    }
+    if (url.pathname === '/api/reservations' && req.method === 'POST') {
+      if (sm.fallarPost > 0) { sm.fallarPost--; return responder(res, 503, { status: 503, title: 'Service Unavailable' }); }
+      const b = JSON.parse(cuerpo);
+      if (!b.arrivalDate || !b.departureDate || b.apartmentId !== SM_APT) return responder(res, 400, { status: 400, title: 'Bad Request', detail: 'Failed validation', validation_messages: { apartmentId: 'invalid' } });
+      const choque = activas().find(x => x.arrival < b.departureDate && x.departure > b.arrivalDate);
+      if (choque) return responder(res, 400, { status: 400, title: 'Bad Request', detail: 'Failed validation', validation_messages: { error: `There exists already a reservation from ${choque.arrival} to ${choque.departure}` } });
+      const nueva = { id: ++sm.ultimo, arrival: b.arrivalDate, departure: b.departureDate, type: 'reservation', channel: { id: b.channelId, name: 'Direct booking' }, apartment: { id: SM_APT }, notice: b.notice, 'prepayment-paid': b.prepaymentStatus === 1 ? 'Yes' : 'No', email: b.email };
+      sm.reservas.push(nueva);
+      if (sm.perderRespuesta > 0) { sm.perderRespuesta--; return responder(res, 504, { status: 504, title: 'Gateway Timeout' }); } // se creó, pero la respuesta "se pierde"
+      return responder(res, 200, { id: nueva.id });
+    }
+    const mr = url.pathname.match(/^\/api\/reservations\/(\d+)$/);
+    const b = mr && sm.reservas.find(x => String(x.id) === mr[1]);
+    if (mr && !b) return responder(res, 404, { status: 404, title: 'Not Found' });
+    if (mr && req.method === 'PUT') { const c = JSON.parse(cuerpo || '{}'); if (c.notice) b.notice = c.notice; if ('prepaymentStatus' in c) b['prepayment-paid'] = c.prepaymentStatus === 1 ? 'Yes' : 'No'; b.type = 'modification of booking'; return responder(res, 200, { status: 200, title: 'Resource updated successfully', detail: '' }); }
+    if (mr && req.method === 'DELETE') { b.type = 'cancellation'; return responder(res, 200, { success: true }); }
+    return responder(res, 404, { status: 404, title: 'Not Found' });
+  }
 
   // --- API simulada ---
   const auth = req.headers.authorization || '';

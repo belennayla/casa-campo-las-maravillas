@@ -68,7 +68,7 @@ console.log('7) Idempotencia (misma solicitud 3 veces a la vez)');
 const k = uuid(), cuerpo = { ingreso: C, salida: E, adultos: 3, ...contacto };
 const tres = await Promise.all([1, 2, 3].map(() => post('/api/bloqueos', cuerpo, { 'idempotency-key': k, 'x-clave-pruebas': CLAVE })));
 const ids = await Promise.all(tres.map(x => x.json()));
-ok(tres.every(x => x.status === 200 || x.status === 201) && new Set(ids.map(x => x.id)).size === 1, 'una sola reserva'); creados.add(ids[0].id);
+ok(tres.every(x => x.status === 200 || x.status === 201) && new Set(ids.map(x => x.id)).size === 1, `una sola reserva (respuestas ${tres.map(x => x.status).join(', ')} · ${ids.map(x => x.error || '').join(' ')})`); creados.add(ids[0].id);
 
 console.log('8) Vencimiento de bloqueos');
 s = await bloquear({ ingreso: E, salida: F, adultos: 2, ...contacto, vence_en_segundos: 5 }); const corto = await s.json(); creados.add(corto.id);

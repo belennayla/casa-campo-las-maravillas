@@ -47,4 +47,20 @@ CONFIRMACION_AUTOMATICA = "false"
 # Turnstile: solo se aceptan verificaciones hechas en la web oficial.
 TURNSTILE_HOSTNAMES = "casacampolasmaravillas.github.io"
 PANEL_URL ="https://panel-casacampo.reservas-casacampo.workers.dev"
-# Secretos de este Worker: MP_ACCESS_TOKEN, MP_WEBHOOK_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TURNSTILE_SECRET
+
+# --- Reserva automática (Fase 1). Todo APAGADO en producción hasta autorización. ---
+# whatsapp = recorrido actual · solicitud = aprobación manual · instantanea = reserva y seña sin intervención
+MODO_RESERVA = "whatsapp"
+# ical = sin gestor de canales (NUNCA permite confirmar solo) · smoobu = gestor de canales (fase 2)
+PROVEEDOR_DISPONIBILIDAD = "ical"
+CONFIRMACION_AUTOMATICA_PRUEBAS = "false"
+RETENCION_MP_MINUTOS = "30"
+ORDEN_MARGEN_MIN = "5"
+RETENCION_TRANSFERENCIA_HORAS = "48"
+# Smoobu (fase 2): id de la casa en Smoobu, canal propio, y si ya se COMPROBÓ que una retención por API cierra Booking y Airbnb.
+SMOOBU_APARTAMENTO_ID = ""
+SMOOBU_CANAL_ID = "13"
+SMOOBU_BLOQUEO_VERIFICADO = "false"
+# Secretos de este Worker: MP_ACCESS_TOKEN, MP_WEBHOOK_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TURNSTILE_SECRET,
+#   ACCESO_SECRETO (enlaces privados de los huéspedes), ICAL_URLS y AIRBNB_ICAL_URL (consulta en vivo),
+#   y en la fase 2: SMOOBU_API_KEY, SMOOBU_API_SECRET, SMOOBU_WEBHOOK_TOKEN

@@ -34,7 +34,7 @@ const webhook = async (orderId, { firma, ts = Math.floor(Date.now() / 1000), sec
   const headers = { 'content-type': 'application/json', 'x-request-id': reqId };
   if (!sinFirma) headers['x-signature'] = `ts=${ts},v1=${firma || firmar(orderId, reqId, ts, secreto)}`;
   const r = await fetch(`${BASE}/api/webhooks/mercadopago?data.id=${orderId}&type=order`, { method: 'POST', headers, body: JSON.stringify({ action: 'order.processed', type: 'order', data: { id: orderId } }) });
-  await esperar(900); // procesamiento en segundo plano (ctx.waitUntil)
+  await esperar(1600); // procesamiento en segundo plano (ctx.waitUntil), incluido el intento de confirmación
   return r.status;
 };
 const pagado = (amount, extra = {}) => ({ status: 'processed', status_detail: 'accredited', pago: { status: 'processed', status_detail: 'accredited', amount, ...extra } });

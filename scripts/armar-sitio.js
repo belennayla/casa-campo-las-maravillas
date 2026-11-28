@@ -13,7 +13,7 @@ const OUT = path.join(ROOT, '_site');
 
 // Archivos y carpetas que forman la web pública.
 const PUBLICOS = [
-  'index.html', 'robots.txt', 'sitemap.xml', 'llms.txt',
+  'index.html', 'reserva.html', 'robots.txt', 'sitemap.xml', 'llms.txt',
   'css', 'js', 'img',
   'data/casa.json', 'data/ocupadas-sync.json'
 ];

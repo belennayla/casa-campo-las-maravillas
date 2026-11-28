@@ -167,12 +167,16 @@
   function renderQuote() {
     const q = $('#quote'), btn = $('#btn-seguir');
     $('#btn-limpiar').hidden = !st.in;
+    btn.textContent = textoCta();
     if (!st.in || !st.out) {
       const t = CASA ? CASA.tarifas.por_huespedes : {};
       const inK = k => { const [a, b] = k.split('-').map(Number); return guests() >= a && guests() <= (b || a); };
       const tabla = Object.keys(t).sort((a, b) => parseInt(a) - parseInt(b)).map(k => `<li${inK(k) ? ' class="on"' : ''}><span>${k.includes('-') ? 'Hasta ' + k.split('-')[1] : k} huéspedes</span><b>${money(t[k])}</b></li>`).join('');
+      const p = CASA ? pricePerNight(guests()) : null;
+      // La tarifa del grupo elegido, destacada; las demás quedan como información secundaria (desplegable).
       q.innerHTML = `<p class="quote__empty">${st.in ? `Ingreso: <b>${fmtDate(st.in)}</b>. Elegí la fecha de salida.` : 'Elegí la fecha de ingreso y de salida para ver el precio de tu estadía.'}</p>
-        ${tabla ? `<p class="rates__t">Precio por noche · casa completa</p><ul class="rates">${tabla}</ul>` : ''}`;
+        ${p != null ? `<p class="quote__grupo">Para ${guests()} ${guests() === 1 ? 'huésped' : 'huéspedes'}: <b>${money(p)}</b> por noche · casa completa</p>` : ''}
+        ${tabla ? `<details class="rates__det"><summary>Ver tarifas según cantidad de huéspedes</summary><ul class="rates">${tabla}</ul></details>` : ''}`;
       btn.disabled = true; return;
     }
     const n = nightsBetween(st.in, st.out), g = guests(), p = pricePerNight(g);
@@ -182,7 +186,7 @@
     } else {
       const total = p * n, sena = total * SENA / 100;
       q.innerHTML = dates + `<div id="quote-filas">${filas(p, n, total, sena, total - sena)}</div>
-         ${VERIFICADO ? '' : '<p class="quote__warn">Disponibilidad a confirmar por WhatsApp antes de pagar la seña.</p>'}
+         ${VERIFICADO || modoWeb() === 'instantanea' ? '' : `<p class="quote__warn">Disponibilidad a confirmar ${modoWeb() === 'solicitud' ? '' : 'por WhatsApp '}antes de pagar la seña.</p>`}
          <p class="quote__srv" id="quote-srv" role="status"></p>`;
     }
     btn.disabled = false;
@@ -244,7 +248,9 @@
     const n = nightsBetween(st.in, st.out), p = pricePerNight(guests());
     if (p == null || data.total !== p * n) $('#quote-filas') && ($('#quote-filas').innerHTML = filas(data.precio_noche, n, data.total, data.sena, data.saldo));
     el.className = 'quote__srv quote__srv--ok';
-    el.textContent = 'Precio verificado por el sistema. Te confirmamos la disponibilidad por WhatsApp antes de pagar la seña.';
+    el.textContent = modoWeb() === 'instantanea' ? 'Precio y disponibilidad verificados por el sistema.'
+      : 'Precio verificado por el sistema. Te confirmamos la disponibilidad antes de pagar la seña.';
+    actualizarFormulario();
   }
 
   function renderGuests() {
@@ -273,7 +279,120 @@
   $('#cal-prev').onclick = () => { st.view = new Date(st.view.getFullYear(), st.view.getMonth() - 1, 1); renderCal(); };
   $('#cal-next').onclick = () => { st.view = new Date(st.view.getFullYear(), st.view.getMonth() + 1, 1); renderCal(); };
   $('#btn-limpiar').onclick = () => { st.in = st.out = null; setMsg(''); $('#form').hidden = true; $('#done').hidden = true; renderCal(); renderQuote(); };
-  $('#btn-seguir').onclick = () => { $('#form').hidden = false; $('#done').hidden = true; prepararTurnstile(); $('#form').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#form [name=nombre]').focus({ preventScroll: true }); };
+  $('#btn-seguir').onclick = () => { $('#form').hidden = false; $('#done').hidden = true; configurarFormulario(); prepararTurnstile(); $('#form').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#form [name=nombre]').focus({ preventScroll: true }); };
+
+  /* ---------- MODO DE RESERVA ----------
+     whatsapp    (actual): el formulario arma un mensaje de WhatsApp.
+     solicitud   : la solicitud se registra en el servidor y los dueños aprueban.
+     instantanea : el huésped reserva y paga la seña sin intervención (o en el modo prueba privado).
+     Con el servidor caído o sin JavaScript, siempre queda WhatsApp. */
+  function modoWeb() {
+    if (!CASA || !CASA.api_reservas || !CASA.turnstile_site_key) return 'whatsapp';
+    if (clavePrueba() || CASA.modo_reserva === 'instantanea') return 'instantanea';
+    return CASA.solicitudes_en_linea ? 'solicitud' : 'whatsapp';
+  }
+  const textoCta = () => ({ instantanea: 'Reservar estas fechas', solicitud: 'Solicitar estas fechas' })[modoWeb()] || 'Solicitar reserva';
+  const montosActuales = () => {
+    const srvOk = SRV && SRV.key === claveSrv() && SRV.data && !SRV.error && SRV.data.disponible;
+    if (srvOk) return SRV.data;
+    const n = nightsBetween(st.in, st.out), p = pricePerNight(guests());
+    if (p == null) return null;
+    const total = p * n; return { total, sena: total * SENA / 100, saldo: total - total * SENA / 100 };
+  };
+  const medioElegido = () => ($('#form input[name=medio]:checked') || {}).value || 'mercadopago';
+  const TEXTOS_TERMINOS = {
+    instantanea: [
+      'La <strong>seña es el 50 %</strong> del total. El <strong>50 % restante se paga al ingresar</strong>.',
+      'Con <strong>Mercado Pago</strong> (débito, crédito o dinero en cuenta), tus fechas quedan retenidas <strong>30 minutos</strong> mientras pagás. Con <strong>transferencia</strong>, <strong>48 horas</strong> hasta que verifiquemos la acreditación.',
+      'La reserva queda <strong>confirmada cuando la seña está acreditada</strong> y se verifica la disponibilidad. Lo ves en tu enlace privado, junto con el comprobante.',
+      'Los intereses o costos de financiación del medio de pago que elijas quedan a tu cargo.',
+      '<strong>No hay cancelación gratuita:</strong> la seña no es reembolsable. Si por un problema de disponibilidad no podemos confirmar tus fechas, te devolvemos el <strong>100 % de la seña</strong>.',
+      'Ingreso de 15:00 a 18:00 · Salida hasta las 11:00.'
+    ],
+    solicitud: [
+      'Enviar la solicitud <strong>no reserva las fechas ni tiene costo</strong>. Revisamos la disponibilidad y te respondemos.',
+      'Si aprobamos tu solicitud, te guardamos las fechas <strong>48 horas</strong> para que pagues la <strong>seña del 50 %</strong>. Si no se acredita en ese plazo, las fechas se liberan.',
+      'La reserva queda <strong>confirmada cuando la seña está acreditada</strong> y te lo confirmamos. El <strong>50 % restante se paga al ingresar</strong>.',
+      '<strong>No hay cancelación gratuita:</strong> la seña no es reembolsable. Si por un problema de disponibilidad no podemos confirmar tus fechas, te devolvemos el <strong>100 % de la seña</strong>.',
+      'Ingreso de 15:00 a 18:00 · Salida hasta las 11:00.'
+    ]
+  };
+  let terminosOriginales = null;
+  function configurarFormulario() {
+    const f = $('#form'), modo = modoWeb(), ul = $('.terms ul', f);
+    if (terminosOriginales === null) terminosOriginales = ul.innerHTML;
+    ul.innerHTML = TEXTOS_TERMINOS[modo] ? TEXTOS_TERMINOS[modo].map(t => `<li>${t}</li>`).join('') : terminosOriginales;
+    // Resumen fijo de la estadía, con la opción de volver a cambiar fechas o huéspedes sin perder los datos cargados.
+    let res = $('#form-res');
+    if (!res) {
+      res = document.createElement('div'); res.id = 'form-res'; res.className = 'form__res';
+      $('h3', f).after(res);
+      res.addEventListener('click', e => { if (e.target.closest('button')) { f.hidden = true; $('#reservar').scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
+    }
+    // Correo obligatorio y elección del medio de pago solo en la reserva instantánea.
+    const email = f.email, lab = email.closest('label');
+    email.required = modo === 'instantanea';
+    lab.firstChild.textContent = modo === 'instantanea' ? 'Correo electrónico (te enviamos el comprobante) ' : 'Correo electrónico ';
+    const small = $('small', lab); if (small) small.hidden = modo === 'instantanea';
+    let medios = $('#medios');
+    if (modo === 'instantanea' && !medios) {
+      medios = document.createElement('fieldset'); medios.id = 'medios'; medios.className = 'medios';
+      medios.innerHTML = `<legend>¿Cómo querés pagar la seña?</legend>
+        <label class="medio"><input type="radio" name="medio" value="mercadopago" checked><span><b>Mercado Pago</b><small>Débito, crédito o dinero en cuenta · se acredita al instante</small></span></label>
+        <label class="medio"><input type="radio" name="medio" value="transferencia"><span><b>Transferencia bancaria</b><small>Retenemos tus fechas 48 h y confirmamos cuando verificamos la acreditación</small></span></label>`;
+      f.insertBefore(medios, $('.terms', f));
+      medios.addEventListener('change', actualizarFormulario);
+    }
+    if (medios) medios.hidden = modo !== 'instantanea';
+    actualizarFormulario();
+  }
+  function actualizarFormulario() {
+    const f = $('#form'); if (!f || f.hidden || !st.in || !st.out) return;
+    const m = montosActuales(), modo = modoWeb(), n = nightsBetween(st.in, st.out), g = guests();
+    const res = $('#form-res');
+    if (res) res.innerHTML = `<div><b>${fmtDate(st.in)} → ${fmtDate(st.out)}</b><span>${n} noches · ${g} ${g === 1 ? 'huésped' : 'huéspedes'}${m ? ` · Total ${money(m.total)} · Seña ${money(m.sena)}` : ''}</span></div>
+      <button type="button" class="link">Cambiar fechas o huéspedes</button>`;
+    const boton = f.querySelector('button[type=submit]');
+    if (boton.disabled) return;
+    boton.textContent = modo === 'instantanea'
+      ? (medioElegido() === 'transferencia' ? `Reservar y pagar por transferencia${m ? ` (seña ${money(m.sena)})` : ''}` : `Pagar la seña${m ? ` de ${money(m.sena)}` : ''} con Mercado Pago`)
+      : modo === 'solicitud' ? 'Enviar solicitud (sin pagar)' : 'Preparar mensaje de WhatsApp';
+  }
+
+  /* ---------- RESERVA INSTANTÁNEA ----------
+     Retiene las fechas en el servidor y lleva al huésped a su enlace privado (reserva.html), donde paga la seña,
+     sigue el estado y, al confirmarse, ve el comprobante. */
+  const guardarReserva = (numero, acceso) => { try { const m = JSON.parse(localStorage.getItem('cc_reservas') || '{}'); m[numero] = acceso; localStorage.setItem('cc_reservas', JSON.stringify(m)); } catch { } };
+  let idemClave = null, idemDatos = null;
+  async function reservarAhora(f, datos) {
+    const err = $('#form-err'), boton = f.querySelector('button[type=submit]');
+    if (!tsToken) { err.textContent = 'Completá la verificación de seguridad (el recuadro de arriba).'; return; }
+    const cuerpo = { ingreso: st.in, salida: st.out, adultos: st.adultos, menores: st.menores, ...datos, medio_pago: medioElegido(), acepto: true };
+    const huella = JSON.stringify({ ...cuerpo });
+    if (huella !== idemDatos) { idemDatos = huella; idemClave = crypto.randomUUID(); } // reintento tras un corte: misma clave, misma reserva
+    boton.disabled = true; boton.textContent = 'Reservando tus fechas…'; err.textContent = '';
+    let d = null, status = 0;
+    try {
+      const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 20000);
+      const r = await fetch(CASA.api_reservas.replace(/\/$/, '') + '/api/reservas', {
+        method: 'POST', signal: ctl.signal,
+        headers: { 'content-type': 'application/json', 'idempotency-key': idemClave, ...(clavePrueba() ? { 'x-clave-pruebas': clavePrueba() } : {}) },
+        body: JSON.stringify({ ...cuerpo, turnstile: tsToken })
+      });
+      clearTimeout(to); status = r.status; d = await r.json().catch(() => ({}));
+    } catch { status = 0; }
+    if ((status === 200 || status === 201) && d && d.acceso) {
+      guardarReserva(d.numero, d.acceso);
+      location.href = 'reserva.html#t=' + encodeURIComponent(d.acceso);
+      return;
+    }
+    tsToken = null; if (window.turnstile && typeof tsWidget === 'string' && tsWidget !== 'cargando') window.turnstile.reset(tsWidget);
+    boton.disabled = false; actualizarFormulario();
+    if (status !== 0) idemDatos = null; // respuesta definitiva: el próximo intento es una reserva nueva
+    if (status === 409) { SRV = null; err.textContent = (d && d.mensaje) || 'Esas fechas ya no están disponibles. Elegí otras fechas.'; return; }
+    err.textContent = status === 0 ? 'No pudimos conectarnos. Revisá tu conexión y probá de nuevo: si la reserva se había creado, no se duplica.'
+      : (d && d.mensaje) || 'No pudimos completar la reserva. Probá de nuevo o escribinos por WhatsApp.';
+  }
 
   /* ---------- SOLICITUD EN LÍNEA (etapa 1) ----------
      Si está habilitada en casa.json, la solicitud se registra en el servidor (con Turnstile) y el huésped recibe
@@ -290,14 +409,14 @@
     }
     if (!clavePrueba()) return;
     const b = document.createElement('div');
-    b.textContent = '🧪 Modo prueba: las solicitudes se registran como PRUEBA. ';
+    b.textContent = '🧪 Modo prueba: las reservas se registran como PRUEBA y no bloquean fechas reales. ';
     const x = document.createElement('button'); x.type = 'button'; x.textContent = 'Salir';
     x.onclick = () => { try { sessionStorage.removeItem(CLAVE_SS); } catch { } location.href = location.pathname; };
     b.appendChild(x);
     b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;background:#964d2c;color:#fff;padding:8px 12px;font:14px system-ui,sans-serif;text-align:center';
     document.body.appendChild(b);
   }
-  const enLinea = () => !!(CASA && CASA.api_reservas && CASA.turnstile_site_key && (CASA.solicitudes_en_linea || clavePrueba()));
+  const enLinea = () => modoWeb() !== 'whatsapp';
   let tsToken = null, tsWidget = null;
   function prepararTurnstile() {
     if (!enLinea() || tsWidget !== null) return;
@@ -334,6 +453,11 @@
     if (!nombre) return err.textContent = 'Completá tu nombre y apellido.';
     if (tel.replace(/\D/g, '').length < 8) return err.textContent = 'Completá un teléfono válido.';
     if (!f.acepto.checked) return err.textContent = 'Para continuar tenés que aceptar las condiciones de la reserva.';
+    if (modoWeb() === 'instantanea') {
+      f.email.setAttribute('aria-invalid', !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email));
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return err.textContent = 'Completá un correo válido: ahí te enviamos el comprobante.';
+      return reservarAhora(f, { nombre, telefono: tel, email, observaciones: obs });
+    }
     if (enLinea() && tsWidget !== null && !tsToken) return err.textContent = 'Completá la verificación de seguridad (el recuadro de arriba).';
     err.textContent = '';
     let sol = null;
@@ -343,10 +467,16 @@
       sol = await enviarSolicitud({ nombre, telefono: tel, email, observaciones: obs });
       boton.disabled = false; boton.textContent = txt;
     }
-    const num = $('#sol-num');
-    if (sol && sol.numero) {
+    const num = $('#sol-num'), enviada = !!(sol && sol.numero);
+    // Solicitud registrada: WhatsApp pasa a ser opcional y los datos de pago aparecen recién cuando se aprueba.
+    $('#done h3').textContent = enviada ? 'Solicitud enviada' : 'Revisá tu mensaje y envialo';
+    $('#done .pay').hidden = enviada;
+    $('#wa-msg').hidden = enviada; $('#wa-msg').previousElementSibling.hidden = enviada;
+    $('#wa-link').textContent = enviada ? 'Escribinos por WhatsApp (opcional)' : 'Enviar solicitud por WhatsApp';
+    $('#wa-link').classList.toggle('btn--ghost-dark', enviada); $('#wa-link').classList.toggle('btn--wa', !enviada);
+    if (enviada) {
       num.hidden = false; num.className = 'done__num';
-      num.innerHTML = `Tu número de solicitud es <b>${sol.numero}</b>. Las fechas todavía no están reservadas: revisamos la disponibilidad y te respondemos por WhatsApp. Si querés, mandanos también el mensaje.`;
+      num.innerHTML = `Tu número de solicitud es <b>${sol.numero}</b>. <strong>Todavía no está reservada:</strong> revisamos la disponibilidad y te respondemos. No tenés que hacer nada más.`;
     } else if (sol && sol.error) {
       num.hidden = false; num.className = 'done__num done__num--aviso';
       num.textContent = 'No pudimos registrar la solicitud en línea. Enviala por WhatsApp con el botón de abajo.';
@@ -429,7 +559,9 @@
       $('#cal').appendChild(p);
     } else {
       const t = problemas.join('; ');
-      $('#aviso-cal').textContent = `Disponibilidad a confirmar: ${t}. Antes de reservar te confirmamos las fechas por WhatsApp.`;
+      $('#aviso-cal').textContent = modoWeb() === 'instantanea'
+        ? `Calendario con demora: ${t}. Antes de cobrar la seña, el sistema verifica la disponibilidad en vivo.`
+        : `Disponibilidad a confirmar: ${t}. Antes de reservar te confirmamos las fechas${modoWeb() === 'solicitud' ? '' : ' por WhatsApp'}.`;
       $('#aviso-cal').hidden = false;
     }
     $('#alias').textContent = data.reserva.pago.alias;

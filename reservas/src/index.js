@@ -14,8 +14,14 @@
   - Webhook con firma HMAC, verificación del estado REAL de la orden, reintentos y conciliación periódica.
   - Un pago acreditado deja la reserva en "pago_verificado", nunca en "confirmada": la confirman los dueños.
 
+  FASE 1 · RESERVA AUTOMÁTICA (ver automatico.js y disponibilidad.js):
+  - Reserva instantánea con seña (Mercado Pago o transferencia), enlace privado del huésped, confirmación automática
+    SEGURA (solo con un gestor de canales que cierre Booking y Airbnb de verdad; nunca con iCal) y excepciones.
+
   Los datos personales se guardan solo en la base D1 privada. Ninguna respuesta pública los devuelve.
 */
+import { PANEL_HTML } from './panel-html.js';
+import { iniciarReserva, miReserva, pagarMiReserva, intentarConfirmacion, procesarGestor, webhookGestor, apiAdminReservas, modoReserva, avisarConflictoPago } from './automatico.js';
 
 const MAX_NOCHES = 30;
 const MAX_MESES_ADELANTE = 18;
@@ -26,7 +32,13 @@ export default {
     const cors = corsHeaders(req, env);
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     try {
-      if (url.pathname === '/api/salud' && req.method === 'GET') return json(estadoServicio(env), 200, cors);
+      if (url.pathname === '/api/salud' && req.method === 'GET') return json({ ...estadoServicio(env), modo_reserva: modoReserva(env, await claveDePruebaValida(req, env)) }, 200, cors);
+      // Reserva automática: iniciar, enlace privado del huésped, pagar, avisos del gestor de canales.
+      if (url.pathname === '/api/reservas' && req.method === 'POST') return await iniciarReserva(req, env, ctx, cors);
+      if (url.pathname === '/api/mi-reserva' && req.method === 'GET') return await miReserva(req, env, cors);
+      if (url.pathname === '/api/mi-reserva/pagar' && req.method === 'POST') return await pagarMiReserva(req, env, cors);
+      const wg = url.pathname.match(/^\/api\/webhooks\/gestor\/([A-Za-z0-9_-]{1,100})$/);
+      if (wg && req.method === 'POST') return await webhookGestor(req, env, wg[1]);
       if (url.pathname === '/api/cotizar' && req.method === 'POST') {
         const esPrueba = await claveDePruebaValida(req, env);
         if (!esPrueba) await limitar(env.LIMITE_COTIZAR, req);
@@ -51,7 +63,7 @@ export default {
       const cal = url.pathname.match(/^\/calendario-(booking|airbnb|vrbo|todas)\.ics$/);
       if (cal && req.method === 'GET') return await calendarioExportado(env, cal[1]);
       if (url.pathname === '/api/pruebas/mp-cuenta' && req.method === 'GET') return await diagnosticoCuenta(req, env, cors);
-      const mp = url.pathname.match(/^\/api\/pruebas\/reservas\/([0-9a-f-]{36})$/);
+      const mp = url.pathname.match(/^\/api\/pruebas\/reservas\/([0-9a-f-]{36}|CC-\d{6}-[A-Z0-9]{4})$/);
       if (mp && req.method === 'GET') return await detallePrueba(mp[1], req, env, cors);
       return json({ error: 'no_encontrado' }, 404, cors);
     } catch (e) {
@@ -80,7 +92,7 @@ function json(data, status, headers) {
 function corsHeaders(req, env) {
   const origen = req.headers.get('origin');
   const permitidos = (env.ORIGENES_PERMITIDOS || '').split(',').map(s => s.trim());
-  const h = { 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'content-type, idempotency-key, x-clave-pruebas', 'access-control-max-age': '86400', 'vary': 'origin' };
+  const h = { 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'content-type, idempotency-key, x-clave-pruebas, x-acceso', 'access-control-max-age': '86400', 'vary': 'origin' };
   if (origen && permitidos.includes(origen)) h['access-control-allow-origin'] = origen;
   return h;
 }
@@ -108,6 +120,9 @@ function addDays(s, n) { const d = new Date(s + 'T00:00:00Z'); d.setUTCDate(d.ge
 function nochesEntre(a, b) { return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 864e5); }
 function listaNoches(ingreso, salida) { const out = []; for (let d = ingreso; d < salida; d = addDays(d, 1)) out.push(d); return out; }
 function fechaValida(s) { return FECHA.test(s) && new Date(s + 'T00:00:00Z').toISOString().slice(0, 10) === s; }
+// Las noches de reservas de PRUEBA se guardan con prefijo "P:": entre pruebas se siguen excluyendo, pero nunca
+// chocan con una reserva real ni aparecen en los calendarios exportados.
+function claveNoche(fecha, origen) { return origen === 'prueba' ? 'P:' + fecha : fecha; }
 
 function estadoServicio(env) {
   return {
@@ -182,10 +197,10 @@ async function revisarDisponibilidad(env, casa, e, { incluirPruebas = true } = {
   // 1) Base de datos propia (bloqueos vigentes y reservas).
   //    La cotización pública ignora las reservas de PRUEBA (origen = 'prueba') para no afectar a visitantes reales.
   await vencerBloqueos(env);
-  const ph = noches.map(() => '?').join(',');
-  const { results } = await env.DB.prepare(`SELECT n.fecha FROM noches n JOIN reservas r ON r.id = n.reserva_id
-    WHERE n.fecha IN (${ph}) AND (? = 1 OR r.origen <> 'prueba')`).bind(...noches, incluirPruebas ? 1 : 0).all();
-  const ocupadasDB = new Set(results.map(r => r.fecha));
+  const claves = incluirPruebas ? [...noches, ...noches.map(f => 'P:' + f)] : noches;
+  const ph = claves.map(() => '?').join(',');
+  const { results } = await env.DB.prepare(`SELECT n.fecha FROM noches n WHERE n.fecha IN (${ph})`).bind(...claves).all();
+  const ocupadasDB = new Set(results.map(r => r.fecha.replace(/^P:/, '')));
   // 2) Reservas directas cargadas a mano + 3) copia de Booking/Airbnb publicada.
   const sync = await calendarioPublicado(env);
   const externas = [...(casa.ocupadas || []), ...((sync && sync.ocupadas) || [])];
@@ -231,6 +246,17 @@ function validarContacto(body) {
   return { nombre, telefono, email: email || null, observaciones: obs || null };
 }
 
+// Si dos pedidos con la MISMA clave de idempotencia llegan a la vez, el segundo puede ver las noches ya tomadas por el
+// primero antes de que su registro sea visible: se espera un instante y se devuelve la misma reserva en lugar de "ocupado".
+async function esperarIdempotencia(env, clave) {
+  for (let i = 0; i < 4; i++) {
+    const r = await env.DB.prepare('SELECT reserva_id FROM idempotencia WHERE clave = ?').bind(clave).first();
+    if (r) return r.reserva_id;
+    await new Promise(ok => setTimeout(ok, 250));
+  }
+  return null;
+}
+
 // Mientras la web no esté conectada, crear bloqueos solo se permite con la clave de pruebas
 // (secreto CLAVE_PRUEBAS en Cloudflare). Sin ese secreto cargado, nadie puede crear bloqueos.
 async function claveDePruebaValida(req, env) {
@@ -259,7 +285,11 @@ async function crearBloqueo(req, env, cors) {
   const c = validarContacto(body);
   const precio = calcularPrecio(casa, e);
   const disp = await revisarDisponibilidad(env, casa, e);
-  if (!disp.disponible) throw new ErrorUsuario('no_disponible', 'Esas fechas ya no están disponibles. Elegí otras o escribinos por WhatsApp.', 409);
+  if (!disp.disponible) {
+    const misma = await esperarIdempotencia(env, clave); // ¿la "ocupó" la misma solicitud enviada dos veces a la vez?
+    if (misma) return await verReserva(misma, env, cors, 200);
+    throw new ErrorUsuario('no_disponible', 'Esas fechas ya no están disponibles. Elegí otras o escribinos por WhatsApp.', 409);
+  }
 
   const id = crypto.randomUUID(), t = ahora();
   // Solo en pruebas se puede acortar el vencimiento (5 a 600 segundos) para probar que se liberan las fechas.
@@ -277,7 +307,7 @@ async function crearBloqueo(req, env, cors) {
       VALUES (?, ?, ?, 'bloqueo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, t, t, e.ingreso, e.salida, e.noches, e.adultos, e.menores, e.huespedes,
         precio.precio_noche, precio.total, precio.sena, precio.saldo, precio.moneda, c.nombre, c.telefono, c.email, c.observaciones, vence, origen),
-    ...noches.map(f => env.DB.prepare('INSERT INTO noches (fecha, reserva_id) VALUES (?, ?)').bind(f, id)),
+    ...noches.map(f => env.DB.prepare('INSERT INTO noches (fecha, reserva_id) VALUES (?, ?)').bind(claveNoche(f, origen), id)),
     env.DB.prepare('INSERT INTO idempotencia (clave, reserva_id, creada) VALUES (?, ?, ?)').bind(clave, id, t),
     env.DB.prepare('INSERT INTO eventos (reserva_id, fecha, tipo, detalle) VALUES (?, ?, ?, ?)')
       .bind(id, t, 'bloqueo_creado', JSON.stringify({ vence, garantizada: false, motivos: disp.motivos }))
@@ -327,7 +357,8 @@ async function vencerBloqueos(env) {
   const stmts = [];
   for (const { id } of results) {
     stmts.push(env.DB.prepare("UPDATE solicitudes SET estado = 'vencida', actualizada = ? WHERE reserva_id = ? AND estado = 'aprobada'").bind(t, id));
-    stmts.push(env.DB.prepare("UPDATE reservas SET estado = 'vencida', actualizada = ? WHERE id = ? AND estado IN ('bloqueo', 'pendiente_pago')").bind(t, id));
+    stmts.push(env.DB.prepare(`UPDATE reservas SET estado = 'vencida', actualizada = ?,
+      cm_estado = CASE cm_estado WHEN 'retenida' THEN 'liberacion_pendiente' ELSE cm_estado END WHERE id = ? AND estado IN ('bloqueo', 'pendiente_pago')`).bind(t, id));
     stmts.push(env.DB.prepare('DELETE FROM noches WHERE reserva_id = ?').bind(id));
     stmts.push(env.DB.prepare('INSERT INTO eventos (reserva_id, fecha, tipo) VALUES (?, ?, ?)').bind(id, t, 'bloqueo_vencido'));
   }
@@ -386,10 +417,18 @@ async function crearOrdenSena(req, env, cors) {
   const body = await leerJson(req);
   const id = String(body.reserva_id || '');
   if (!/^[0-9a-f-]{36}$/.test(id)) throw new ErrorUsuario('reserva_invalida', 'Reserva inválida.');
+  const { fila: f, creada } = await generarOrden(env, id);
+  return json(respuestaOrden(f), creada ? 201 : 200, cors);
+}
+
+// Crea (una sola vez) la orden de seña de una reserva retenida. La orden vence ORDEN_MARGEN_MIN minutos antes que la
+// retención, así un pago tardío siempre llega mientras las fechas siguen siendo nuestras (y si no, es una excepción).
+async function generarOrden(env, id) {
   const r = await env.DB.prepare('SELECT * FROM reservas WHERE id = ?').bind(id).first();
   if (!r) throw new ErrorUsuario('no_encontrado', 'Reserva inexistente.', 404);
-  if (r.estado === 'pendiente_pago' && r.mp_checkout_url) return json(respuestaOrden(r), 200, cors); // repetida: misma orden
+  if (r.estado === 'pendiente_pago' && r.mp_checkout_url) return { fila: r, creada: false }; // repetida: misma orden
   if (r.estado !== 'bloqueo') throw new ErrorUsuario('estado_invalido', 'Esta reserva no admite un pago nuevo.', 409);
+  if (r.medio_pago === 'transferencia') throw new ErrorUsuario('estado_invalido', 'Esta reserva se paga por transferencia.', 409);
   const restante = (Date.parse(r.vence_en) - Date.now()) / 1000;
   if (!(restante >= Number(env.ORDEN_MIN_SEGUNDOS || 120))) throw new ErrorUsuario('bloqueo_por_vencer', 'El tiempo para pagar está por vencer. Volvé a elegir las fechas.', 409);
 
@@ -398,25 +437,26 @@ async function crearOrdenSena(req, env, cors) {
   const claim = await env.DB.prepare("UPDATE reservas SET mp_order_id = 'creando', actualizada = ? WHERE id = ? AND estado = 'bloqueo' AND mp_order_id IS NULL").bind(t, id).run();
   if (!claim.meta.changes) {
     const otra = await env.DB.prepare('SELECT * FROM reservas WHERE id = ?').bind(id).first();
-    if (otra && otra.mp_checkout_url) return json(respuestaOrden(otra), 200, cors);
+    if (otra && otra.mp_checkout_url) return { fila: otra, creada: false };
     throw new ErrorUsuario('orden_en_curso', 'El pago ya se está generando. Esperá unos segundos.', 409);
   }
 
   const base = env.SITE_URL.replace(/\/$/, '');
   const monto = montoTexto(r.sena);
+  const vuelta = r.numero ? `${base}/reserva.html?n=${encodeURIComponent(r.numero)}&pago=` : `${base}/?reserva=${r.id}&pago=`;
   const orden = {
     type: 'online',
     processing_mode: 'manual',
     total_amount: monto,
     external_reference: r.id,
-    expiration_time: `PT${Math.max(1, Math.floor(restante / 60))}M`, // vence junto con el bloqueo
+    expiration_time: `PT${Math.max(1, Math.floor(restante / 60) - Number(env.ORDEN_MARGEN_MIN ?? 5))}M`, // vence ANTES que la retención
     description: 'Seña 50 % · Casa Campo Las Maravillas',
     items: [{ title: `Seña 50 % · ${r.noches} noches desde ${r.ingreso}`, quantity: 1, unit_price: monto, external_code: `SENA-${r.id.slice(0, 8)}` }], // máx. 30 caracteres (límite real de la API)
     config: {
       online: {
-        success_url: `${base}/?reserva=${r.id}&pago=aprobado`,
-        failure_url: `${base}/?reserva=${r.id}&pago=rechazado`,
-        pending_url: `${base}/?reserva=${r.id}&pago=pendiente`,
+        success_url: vuelta + 'aprobado',
+        failure_url: vuelta + 'rechazado',
+        pending_url: vuelta + 'pendiente',
         auto_return: 'approved'
       },
       // Sin efectivo (Rapipago / Pago Fácil): demoran días y no son compatibles con un bloqueo temporal.
@@ -456,7 +496,7 @@ async function crearOrdenSena(req, env, cors) {
     evento(env, id, 'orden_creada', { order: o.id, monto, modo: 'prueba' })
   ]);
   const nueva = await env.DB.prepare('SELECT * FROM reservas WHERE id = ?').bind(id).first();
-  return json(respuestaOrden(nueva), 201, cors);
+  return { fila: nueva, creada: true };
 }
 
 function respuestaOrden(r) {
@@ -613,7 +653,8 @@ async function aplicarEstado(env, r, o, reintento = false) {
     || (reintento && vencida && !enProceso);
   if (terminada) {
     // Se consultó el estado real y no hay seña acreditada: recién ahora se liberan las fechas.
-    stmts.push(env.DB.prepare(`UPDATE reservas SET estado = ? WHERE id = ?`).bind(o.status === 'refunded' ? 'cancelada' : 'vencida', r.id));
+    stmts.push(env.DB.prepare(`UPDATE reservas SET estado = ?, cm_estado = CASE cm_estado WHEN 'retenida' THEN 'liberacion_pendiente' ELSE cm_estado END WHERE id = ?`)
+      .bind(o.status === 'refunded' ? 'cancelada' : 'vencida', r.id));
     stmts.push(env.DB.prepare("UPDATE solicitudes SET estado = 'vencida', actualizada = ? WHERE reserva_id = ? AND estado = 'aprobada'").bind(t, r.id));
     stmts.push(env.DB.prepare('DELETE FROM noches WHERE reserva_id = ?').bind(r.id));
     if (r.estado !== 'vencida' && r.estado !== 'cancelada') stmts.push(evento(env, r.id, 'fechas_liberadas', { motivo: `orden_${o.status}${o.status_detail ? '_' + o.status_detail : ''}` }));
@@ -660,7 +701,9 @@ async function registrarAcreditacion(env, r, o, acreditados, stmts) {
     stmts.push(env.DB.prepare(`INSERT INTO devoluciones (reserva_id, mp_order_id, mp_pago_id, monto, motivo, creada) VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT (mp_order_id, motivo) DO NOTHING`).bind(r.id, o.id, pagoId, Math.round(pagadoC / 100), motivo, ahora()));
     stmts.push(evento(env, r.id, 'conflicto_requiere_devolucion', { motivo, order: o.id }));
-    await env.DB.batch(stmts); return 'ok';
+    await env.DB.batch(stmts);
+    try { await avisarConflictoPago(env, r.id, motivo); } catch (e) { console.warn('Aviso de conflicto falló', e && e.message); }
+    return 'ok';
   };
   if (problemas.length) return await conflicto(problemas.join(','));
 
@@ -668,12 +711,13 @@ async function registrarAcreditacion(env, r, o, acreditados, stmts) {
     revision_manual = 1 WHERE id = ? AND estado NOT IN ('pago_verificado', 'confirmada', 'conflicto', 'cancelada')`).bind(r.id);
   const ok = evento(env, r.id, 'pago_acreditado_verificado', { order: o.id, pago: pagoId, monto: r.sena, confirmacion: 'manual' });
   const { results } = await env.DB.prepare('SELECT COUNT(*) n FROM noches WHERE reserva_id = ?').bind(r.id).all();
-  if (results[0].n === r.noches) { await env.DB.batch([...stmts, verificado, ok]); return 'ok'; }
+  if (results[0].n === r.noches) { await env.DB.batch([...stmts, verificado, ok]); await confirmarSiCorresponde(env, r.id); return 'ok'; }
 
   // Pago tardío: el bloqueo ya había vencido. Se intenta volver a tomar las noches en una sola transacción.
   try {
-    await env.DB.batch([...stmts, ...listaNoches(r.ingreso, r.salida).map(f => env.DB.prepare('INSERT INTO noches (fecha, reserva_id) VALUES (?, ?)').bind(f, r.id)),
+    await env.DB.batch([...stmts, ...listaNoches(r.ingreso, r.salida).map(f => env.DB.prepare('INSERT INTO noches (fecha, reserva_id) VALUES (?, ?)').bind(claveNoche(f, r.origen), r.id)),
       verificado, ok, evento(env, r.id, 'pago_tardio_fechas_recuperadas', { order: o.id })]);
+    await confirmarSiCorresponde(env, r.id);
     return 'ok';
   } catch (e) {
     if (!/UNIQUE|PRIMARY KEY|constraint/i.test(String(e && e.message || e))) throw e;
@@ -681,11 +725,21 @@ async function registrarAcreditacion(env, r, o, acreditados, stmts) {
   }
 }
 
+// Seña verificada → intento de confirmación automática segura (o excepción con aviso). Nunca rompe el procesamiento del pago.
+async function confirmarSiCorresponde(env, id) {
+  try { await intentarConfirmacion(env, id); }
+  catch (e) {
+    console.error('Confirmación automática falló', id, e && e.stack || e);
+    await env.DB.batch([env.DB.prepare("UPDATE reservas SET revision_manual = 1, excepcion = 'error_confirmacion' WHERE id = ?").bind(id),
+      evento(env, id, 'excepcion', { motivo: 'error_confirmacion', error: String(e && e.message || e).slice(0, 200) })]);
+  }
+}
+
 /* ---------- 4) Tarea programada: reintentos y conciliación ---------- */
 
 async function tareaProgramada(env) {
   const tareas = [['vencer', () => vencerBloqueos(env)], ['avisos', () => reintentarAvisos(env)], ['conciliar', () => conciliarOrdenes(env)],
-    ['notificaciones', () => reintentarNotificaciones(env)]];
+    ['notificaciones', () => reintentarNotificaciones(env)], ['gestor', () => procesarGestor(env)]];
   for (const [nombre, f] of tareas) {
     try { await f(); } catch (e) { console.error('Tarea programada falló:', nombre, e && e.stack || e); }
   }
@@ -732,9 +786,11 @@ async function diagnosticoCuenta(req, env, cors) {
 
 async function detallePrueba(id, req, env, cors) {
   if (!(await claveDePruebaValida(req, env))) return json({ error: 'no_encontrado' }, 404, cors);
-  const r = await env.DB.prepare(`SELECT id, estado, ingreso, salida, noches, total, sena, saldo, pagado, vence_en, mp_order_id, mp_estado,
-    mp_estado_detalle, revision_manual, origen FROM reservas WHERE id = ?`).bind(id).first();
+  const r = await env.DB.prepare(`SELECT id, numero, estado, ingreso, salida, noches, total, sena, saldo, pagado, vence_en, mp_order_id, mp_estado,
+    mp_estado_detalle, revision_manual, origen, modo, medio_pago, cm_proveedor, cm_ref, cm_estado, cm_intentos, excepcion, confirmada_por
+    FROM reservas WHERE id = ? OR numero = ?`).bind(id, id).first();
   if (!r) return json({ error: 'no_encontrado' }, 404, cors);
+  id = r.id; // se pudo buscar por número
   const [pagos, devs, evs, noches] = await Promise.all([
     env.DB.prepare('SELECT id, monto, estado, estado_detalle FROM pagos WHERE reserva_id = ?').bind(id).all(),
     env.DB.prepare('SELECT monto, motivo, estado FROM devoluciones WHERE reserva_id = ?').bind(id).all(),
@@ -831,11 +887,15 @@ const MENSAJE_SOLICITUD = 'Recibimos tu solicitud. Las fechas todavía no están
        solicitud_recibida · solicitud_aprobada (con link de pago) · solicitud_rechazada · pago_recibido ·
        reserva_confirmada · info_estadia
 */
-export const EVENTOS_HUESPED = ['solicitud_recibida', 'solicitud_aprobada', 'solicitud_rechazada', 'pago_recibido', 'reserva_confirmada', 'info_estadia'];
+export const EVENTOS_HUESPED = ['solicitud_recibida', 'solicitud_aprobada', 'solicitud_rechazada', 'pago_recibido', 'reserva_confirmada', 'info_estadia',
+  'reserva_iniciada', 'transferencia_pendiente'];
+// Hoy el canal del huésped es su ENLACE PRIVADO (reserva.html): ahí ve estado, pago y comprobante sin que nadie le escriba.
+// Preparado para sumar correo ("correo", con un proveedor transaccional) o WhatsApp oficial ("whatsapp") sin cambiar los eventos.
 async function notificarHuesped(env, evento, datos) {
   if (!EVENTOS_HUESPED.includes(evento)) return { enviado: false, motivo: 'evento_desconocido' };
   const canal = env.CANAL_HUESPED || 'ninguno';
   if (canal === 'ninguno') return { enviado: false, motivo: 'canal_huesped_desactivado' };
+  if (canal === 'correo') return { enviado: false, motivo: 'correo_no_implementado' }; // futuro: proveedor de correo transaccional
   if (canal === 'whatsapp') {
     // Futuro: POST https://graph.facebook.com/<versión>/<WHATSAPP_PHONE_ID>/messages con una plantilla aprobada.
     // No se implementa todavía (requiere número propio de la casa, plantillas aprobadas y aceptación del huésped).
@@ -1031,6 +1091,10 @@ export async function apiAdmin(req, env, ctx, url) {
     if (m[2] === 'aprobar') return json(await aprobarSolicitud(env, m[1], quien, body), 200, sinCache);
     return json(await rechazarSolicitud(env, m[1], quien, body), 200, sinCache);
   }
+  if (url.pathname === '/api/admin/yo' && req.method === 'GET') return json({ usuario: quien }, 200, sinCache);
+  // Supervisión de reservas automáticas, pagos, calendario y excepciones (automatico.js).
+  const r = await apiAdminReservas(req, env, url, quien);
+  if (r) return r;
   return json({ error: 'no_encontrado' }, 404, sinCache);
 }
 
@@ -1072,7 +1136,7 @@ async function aprobarSolicitud(env, id, quien, body) {
         VALUES (?, ?, ?, 'bloqueo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ARS', ?, ?, ?, ?, ?, ?, ?)`)
         .bind(rid, t, t, s.ingreso, s.salida, s.noches, s.adultos, s.menores, s.huespedes, s.precio_noche, s.total, s.sena, s.saldo,
           s.nombre, s.telefono, s.email, s.observaciones, vence, s.origen === 'prueba' ? 'prueba' : 'web', s.id),
-      ...noches.map(f => env.DB.prepare('INSERT INTO noches (fecha, reserva_id) VALUES (?, ?)').bind(f, rid)),
+      ...noches.map(f => env.DB.prepare('INSERT INTO noches (fecha, reserva_id) VALUES (?, ?)').bind(claveNoche(f, s.origen), rid)),
       env.DB.prepare(`UPDATE solicitudes SET estado = 'aprobada', reserva_id = ?, retencion_vence = ?, revisada_por = ?, revisada_en = ?, actualizada = ?
         WHERE id = ? AND estado IN ('nueva', 'vencida')`).bind(rid, vence, quien, t, t, s.id),
       evento(env, rid, 'solicitud_aprobada', { numero: s.numero, por: quien, horas })
@@ -1106,7 +1170,7 @@ async function rechazarSolicitud(env, id, quien, body) {
     const r = await env.DB.prepare('SELECT estado, mp_order_id FROM reservas WHERE id = ?').bind(s.reserva_id).first();
     if (r && r.mp_order_id && r.estado !== 'vencida') throw new ErrorUsuario('tiene_pago', 'Esta solicitud ya tiene un pago asociado: revisalo antes de rechazarla.', 409);
     if (r && r.estado === 'bloqueo') {
-      stmts.push(env.DB.prepare("UPDATE reservas SET estado = 'cancelada', actualizada = ? WHERE id = ?").bind(t, s.reserva_id));
+      stmts.push(env.DB.prepare("UPDATE reservas SET estado = 'cancelada', actualizada = ?, cm_estado = CASE cm_estado WHEN 'retenida' THEN 'liberacion_pendiente' ELSE cm_estado END WHERE id = ?").bind(t, s.reserva_id));
       stmts.push(env.DB.prepare('DELETE FROM noches WHERE reserva_id = ?').bind(s.reserva_id));
     }
   }
@@ -1123,69 +1187,11 @@ export async function panelAdmin(req, env) {
     'content-security-policy': "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'" } });
 }
 
-const PANEL_HTML = `<!doctype html><html lang="es-AR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow"><title>Panel · Casa Campo Las Maravillas</title>
-<style>
-body{font:15px/1.5 system-ui,sans-serif;margin:0;background:#f7f2e9;color:#2a2822}header{background:#5b6b4a;color:#fff;padding:12px 16px}
-main{max-width:980px;margin:0 auto;padding:16px}.s{background:#fff;border-radius:10px;padding:14px;margin:10px 0;box-shadow:0 1px 3px #0001}
-.e{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;font-weight:700;background:#eee}.nueva{background:#fbeedd}.aprobada{background:#e3e8da}
-.rechazada,.vencida{background:#eee;color:#777}button{font:inherit;padding:6px 12px;border-radius:8px;border:1px solid #ccc;background:#fff;cursor:pointer;margin:4px 4px 0 0}
-.ok{background:#5b6b4a;color:#fff;border-color:#5b6b4a}.no{color:#964d2c}.msg{color:#964d2c;margin:6px 0 0}.m{color:#6b665a;font-size:13px}
-#login{max-width:420px}input{font:inherit;padding:8px;border:1px solid #ccc;border-radius:8px;width:100%}
-</style></head><body><header><b>Casa Campo Las Maravillas</b> · Solicitudes</header><main>
-<div id="login" hidden><p>Clave de administración (solo para pruebas locales; en producción se ingresa con Cloudflare Access):</p><input id="clave" type="password" autocomplete="off"><button class="ok" id="entrar">Entrar</button></div>
-<p class="m" id="info"></p><p class="m" id="tg" hidden>Avisos por Telegram: <span id="tg-estado"></span> <button id="tg-probar">Enviar aviso de prueba</button> <span id="tg-msg"></span></p><div id="lista"></div></main>
-<script>
-const H = () => { const c = sessionStorage.getItem('clave'); return c ? { 'x-admin-clave': c } : {}; };
-const api = async (u, o = {}) => { const r = await fetch(u, { ...o, headers: { 'content-type': 'application/json', ...H(), ...(o.headers || {}) } }); const d = await r.json().catch(() => ({})); if (r.status === 401) { document.getElementById('login').hidden = false; throw new Error('no autorizado'); } if (!r.ok) { const er = new Error(d.mensaje || d.error || r.status); er.codigo = d.error; throw er; } return d; };
-const f = s => s ? s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4) : '';
-const p = n => '$' + Number(n).toLocaleString('es-AR');
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-async function cargar() {
-  const d = await api('/api/admin/solicitudes');
-  document.getElementById('login').hidden = true;
-  document.getElementById('info').textContent = 'Ingresaste como ' + d.usuario + ' · Pagos online: ' + (d.pagos_habilitados ? 'activados' : 'desactivados');
-  document.getElementById('tg').hidden = false;
-  document.getElementById('tg-estado').textContent = d.telegram_configurado ? 'configurados' : 'sin configurar';
-  document.getElementById('lista').innerHTML = d.solicitudes.map(s => '<div class="s" data-id="' + s.id + '"><span class="e ' + s.estado + '">' + s.estado + '</span> ' + (s.origen === 'prueba' ? '<span class="e">🧪 prueba</span> ' : '') + '<b>' + esc(s.numero) + '</b> · ' + f(s.ingreso) + ' → ' + f(s.salida) + ' · ' + s.noches + ' noches · ' + s.huespedes + ' huéspedes · total ' + p(s.total) + ' · seña ' + p(s.sena) +
-    '<div>' + esc(s.nombre) + ' · <a href="https://wa.me/' + esc(String(s.telefono).replace(/\\D/g, '')) + '" target="_blank" rel="noopener">' + esc(s.telefono) + '</a>' + (s.email ? ' · ' + esc(s.email) : '') + '</div>' +
-    (s.observaciones ? '<div class="m">Nota: ' + esc(s.observaciones) + '</div>' : '') +
-    (s.retencion_vence ? '<div class="m">Fechas retenidas hasta ' + new Date(s.retencion_vence).toLocaleString('es-AR') + '</div>' : '') +
-    (s.motivo ? '<div class="m">Motivo: ' + esc(s.motivo) + '</div>' : '') +
-    '<div class="m">Recibida ' + new Date(s.creada).toLocaleString('es-AR') + (s.revisada_por ? ' · revisada por ' + esc(s.revisada_por) : '') + '</div>' +
-    (['nueva','vencida'].includes(s.estado) ? '<button data-a="revisar">Revisar disponibilidad</button><button class="ok" data-a="aprobar">Aprobar y retener fechas</button>' : '') +
-    (['nueva','aprobada','vencida'].includes(s.estado) ? '<button class="no" data-a="rechazar">Rechazar</button>' : '') + '<p class="msg"></p></div>').join('') || '<p>No hay solicitudes.</p>';
-}
-document.getElementById('lista').addEventListener('click', async e => {
-  const b = e.target.closest('button[data-a]'); if (!b) return;
-  const card = b.closest('.s'), msg = card.querySelector('.msg'), id = card.dataset.id, a = b.dataset.a;
-  let body = {};
-  if (a === 'aprobar') { const h = prompt('¿Cuántas horas retener las fechas? (1 a 72)', '24'); if (h === null) return; body.horas = Number(h); if (!confirm('¿Confirmás que revisaste Booking y Airbnb y las fechas están libres?')) return; }
-  if (a === 'rechazar') { const m = prompt('Motivo (opcional, no se envía al huésped):', 'Fechas no disponibles'); if (m === null) return; body.motivo = m; }
-  const enviar = () => api('/api/admin/solicitudes/' + id + '/' + a, { method: 'POST', body: JSON.stringify(body) });
-  try {
-    let r;
-    try { r = await enviar(); }
-    catch (err) {
-      if (err.codigo !== 'verificacion_en_vivo' || !confirm(err.message + '\\n\\n¿Lo revisaste a mano y está libre?')) throw err;
-      body.forzar = true; r = await enviar();
-    }
-    if (a === 'revisar') {
-      const v = r.en_vivo || {};
-      msg.textContent = (r.disponible ? '✓ Libre. ' : '✗ No disponible. ') + 'En vivo: ' + ((v.consultadas || []).join(', ') || 'ninguna') + (v.ocupadas_en && v.ocupadas_en.length ? ' · OCUPADO en ' + v.ocupadas_en.join(', ') : '') + (v.fallaron && v.fallaron.length ? ' · sin respuesta: ' + v.fallaron.join(', ') : '') + '. ' + (r.advertencias || []).join(' · ');
-      return;
-    }
-    if (a === 'aprobar' && r.siguiente_paso) alert('Aprobada. ' + r.siguiente_paso);
-    await cargar();
-  } catch (err) { msg.textContent = err.message; }
-});
-document.getElementById('tg-probar').onclick = async () => {
-  const m = document.getElementById('tg-msg'); m.textContent = 'Enviando…';
-  try { const r = await api('/api/admin/telegram/prueba', { method: 'POST', body: '{}' }); m.textContent = r.ok ? '✓ Enviado: revisá Telegram.' : '✗ ' + r.motivo; }
-  catch (err) { m.textContent = '✗ ' + err.message; }
-};
-document.getElementById('entrar').onclick = () => { sessionStorage.setItem('clave', document.getElementById('clave').value); cargar().catch(() => {}); };
-cargar().catch(() => {});
-</script></body></html>`;
 
 export const _internos = { precioPorNoche, listaNoches, nochesEntre, fechaValida };
+// Piezas compartidas con automatico.js (reserva automática) y disponibilidad.js (proveedores).
+export {
+  json, ErrorUsuario, leerJson, ahora, datosCasa, calendarioPublicado, validarEstadia, validarContacto, calcularPrecio,
+  revisarDisponibilidad, claveDePruebaValida, verificarTurnstile, limitar, listaNoches, addDays, evento, generarOrden,
+  exigirModoPrueba, enviarTelegram, notificarHuesped, fmtFecha, fmtPesos, numeroSolicitud, claveNoche, mpFetch, fechaValida, esperarIdempotencia
+};
