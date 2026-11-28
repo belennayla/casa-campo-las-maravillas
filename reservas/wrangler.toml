@@ -43,3 +43,6 @@ SOLICITUDES_HABILITADAS = "false"
 CANAL_HUESPED = "ninguno"
 MP_MODO = "prueba"
 CONFIRMACION_AUTOMATICA = "false"
+# Link al panel privado que se incluye en los avisos de Telegram (protegido por Cloudflare Access).
+PANEL_URL = "https://panel-casacampo.reservas-casacampo.workers.dev"
+# Secretos de este Worker: MP_ACCESS_TOKEN, MP_WEBHOOK_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TURNSTILE_SECRET

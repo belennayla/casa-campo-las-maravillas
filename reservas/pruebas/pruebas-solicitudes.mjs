@@ -49,6 +49,14 @@ ok((await admin('/api/admin/solicitudes', null, 'x.y.z')).status === 401, 'token
 ok((await admin('/api/admin/solicitudes', null, null, { 'x-admin-clave': 'a'.repeat(48) })).status === 401, 'clave de administración en producción: no sirve');
 const pag = await fetch(PANEL + '/', { headers: { 'cf-access-jwt-assertion': TOKEN } });
 ok(pag.status === 200 && /noindex/.test(pag.headers.get('x-robots-tag') || ''), 'con token válido: entra al panel (y no se indexa)');
+ok((await admin('/api/admin/telegram/prueba', {}, null)).status === 401, 'aviso de prueba de Telegram sin token: 401');
+const tg0 = (await telegram()).length;
+let tp = await (await admin('/api/admin/telegram/prueba', {})).json();
+ok(tp.ok === true && (await telegram()).slice(tg0).some(m => m.text.includes('Aviso de prueba')), 'botón "Enviar aviso de prueba": llega el mensaje a Telegram');
+ok((await (await admin('/api/admin/solicitudes')).json()).telegram_configurado === true, 'el panel muestra Telegram configurado');
+await fetch(MP + '/__control/telegram', { method: 'POST', body: JSON.stringify({ fallar: 1 }) });
+tp = await (await admin('/api/admin/telegram/prueba', {})).json();
+ok(tp.ok === false && /HTTP 500/.test(tp.motivo) && !/bot\d|TOKEN/i.test(tp.motivo), 'si Telegram falla, el panel lo explica sin mostrar el token');
 
 console.log('\n3) Solicitudes: Turnstile, número, precio y aviso');
 let F = fechas(3);

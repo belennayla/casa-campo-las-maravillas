@@ -855,7 +855,19 @@ async function enviarTelegram(env, texto) {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text: texto, disable_web_page_preview: true })
   });
-  return { ok: r.ok, motivo: r.ok ? null : `HTTP ${r.status}` };
+  if (r.ok) return { ok: true, motivo: null };
+  // Telegram explica el problema ("Unauthorized", "chat not found"...). Nunca se devuelve el token.
+  const d = await r.json().catch(() => ({}));
+  return { ok: false, motivo: `HTTP ${r.status}${d.description ? ' · ' + String(d.description).slice(0, 120) : ''}` };
+}
+
+async function avisoTelegramPrueba(env, quien) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
+    return { ok: false, motivo: 'Faltan los secretos TELEGRAM_BOT_TOKEN y/o TELEGRAM_CHAT_ID en este Worker.' };
+  }
+  const hora = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
+  const r = await enviarTelegram(env, `✅ Aviso de prueba del panel de Casa Campo Las Maravillas.\nEnviado por ${quien} el ${hora}.\nAsí van a llegar las nuevas solicitudes de reserva.`);
+  return r.ok ? { ok: true } : { ok: false, motivo: 'Telegram respondió: ' + r.motivo };
 }
 
 async function notificarSolicitud(env, id) {
@@ -1009,8 +1021,10 @@ export async function apiAdmin(req, env, ctx, url) {
     const q = estado ? env.DB.prepare('SELECT * FROM solicitudes WHERE estado = ? ORDER BY creada DESC LIMIT 200').bind(estado)
       : env.DB.prepare("SELECT * FROM solicitudes ORDER BY CASE estado WHEN 'nueva' THEN 0 WHEN 'aprobada' THEN 1 ELSE 2 END, creada DESC LIMIT 200");
     const { results } = await q.all();
-    return json({ usuario: quien, solicitudes: results, pagos_habilitados: env.PAGOS_HABILITADOS === 'true' }, 200, sinCache);
+    return json({ usuario: quien, solicitudes: results, pagos_habilitados: env.PAGOS_HABILITADOS === 'true',
+      telegram_configurado: !!(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) }, 200, sinCache);
   }
+  if (url.pathname === '/api/admin/telegram/prueba' && req.method === 'POST') return json(await avisoTelegramPrueba(env, quien), 200, sinCache);
   const m = url.pathname.match(/^\/api\/admin\/solicitudes\/([0-9a-f-]{36})\/(aprobar|rechazar|revisar)$/);
   if (m && req.method === 'POST') {
     const body = await leerJson(req).catch(() => ({}));
@@ -1121,7 +1135,7 @@ main{max-width:980px;margin:0 auto;padding:16px}.s{background:#fff;border-radius
 #login{max-width:420px}input{font:inherit;padding:8px;border:1px solid #ccc;border-radius:8px;width:100%}
 </style></head><body><header><b>Casa Campo Las Maravillas</b> · Solicitudes</header><main>
 <div id="login" hidden><p>Clave de administración (solo para pruebas locales; en producción se ingresa con Cloudflare Access):</p><input id="clave" type="password" autocomplete="off"><button class="ok" id="entrar">Entrar</button></div>
-<p class="m" id="info"></p><div id="lista"></div></main>
+<p class="m" id="info"></p><p class="m" id="tg" hidden>Avisos por Telegram: <span id="tg-estado"></span> <button id="tg-probar">Enviar aviso de prueba</button> <span id="tg-msg"></span></p><div id="lista"></div></main>
 <script>
 const H = () => { const c = sessionStorage.getItem('clave'); return c ? { 'x-admin-clave': c } : {}; };
 const api = async (u, o = {}) => { const r = await fetch(u, { ...o, headers: { 'content-type': 'application/json', ...H(), ...(o.headers || {}) } }); const d = await r.json().catch(() => ({})); if (r.status === 401) { document.getElementById('login').hidden = false; throw new Error('no autorizado'); } if (!r.ok) { const er = new Error(d.mensaje || d.error || r.status); er.codigo = d.error; throw er; } return d; };
@@ -1132,6 +1146,8 @@ async function cargar() {
   const d = await api('/api/admin/solicitudes');
   document.getElementById('login').hidden = true;
   document.getElementById('info').textContent = 'Ingresaste como ' + d.usuario + ' · Pagos online: ' + (d.pagos_habilitados ? 'activados' : 'desactivados');
+  document.getElementById('tg').hidden = false;
+  document.getElementById('tg-estado').textContent = d.telegram_configurado ? 'configurados' : 'sin configurar';
   document.getElementById('lista').innerHTML = d.solicitudes.map(s => '<div class="s" data-id="' + s.id + '"><span class="e ' + s.estado + '">' + s.estado + '</span> <b>' + esc(s.numero) + '</b> · ' + f(s.ingreso) + ' → ' + f(s.salida) + ' · ' + s.noches + ' noches · ' + s.huespedes + ' huéspedes · total ' + p(s.total) + ' · seña ' + p(s.sena) +
     '<div>' + esc(s.nombre) + ' · <a href="https://wa.me/' + esc(String(s.telefono).replace(/\\D/g, '')) + '" target="_blank" rel="noopener">' + esc(s.telefono) + '</a>' + (s.email ? ' · ' + esc(s.email) : '') + '</div>' +
     (s.observaciones ? '<div class="m">Nota: ' + esc(s.observaciones) + '</div>' : '') +
@@ -1164,6 +1180,11 @@ document.getElementById('lista').addEventListener('click', async e => {
     await cargar();
   } catch (err) { msg.textContent = err.message; }
 });
+document.getElementById('tg-probar').onclick = async () => {
+  const m = document.getElementById('tg-msg'); m.textContent = 'Enviando…';
+  try { const r = await api('/api/admin/telegram/prueba', { method: 'POST', body: '{}' }); m.textContent = r.ok ? '✓ Enviado: revisá Telegram.' : '✗ ' + r.motivo; }
+  catch (err) { m.textContent = '✗ ' + err.message; }
+};
 document.getElementById('entrar').onclick = () => { sessionStorage.setItem('clave', document.getElementById('clave').value); cargar().catch(() => {}); };
 cargar().catch(() => {});
 </script></body></html>`;

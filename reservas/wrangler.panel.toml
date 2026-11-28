@@ -25,3 +25,4 @@ MP_MODO = "prueba"
 CANAL_HUESPED = "ninguno"
 # Secretos de este Worker (se cargan con: npx.cmd wrangler secret put NOMBRE -c wrangler.panel.toml):
 #   ICAL_URLS, AIRBNB_ICAL_URL  → consulta EN VIVO a Booking y Airbnb al aprobar
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID → botón "Enviar aviso de prueba"
